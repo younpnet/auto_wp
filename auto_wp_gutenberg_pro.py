@@ -21,7 +21,7 @@ CONFIG = {
     "TEXT_MODEL": "gemini-2.5-flash-preview-09-2025"
 }
 
-# 최근 발행된 주제 (중복 방지용 리스트)
+# 주제 중복 방지용 리스트
 RECENT_TITLES = [
     "국민연금 수령시기 연기 혜택 연기연금 인상률 신청 방법 최대 36% 증액 꿀팁 (2026)",
     "국민연금 연말정산 환급금 받는 법 연금소득세 공제 부양가족 신고 총정리 (2026년)",
@@ -39,7 +39,7 @@ class WordPressAutoPoster:
         print("--- [Step 0] 시스템 환경 및 인증 점검 ---")
         for key in ["WP_URL", "WP_APP_PASSWORD", "GEMINI_API_KEY"]:
             if not CONFIG[key]:
-                print(f"❌ 오류: '{key}' 누락")
+                print(f"❌ 오류: '{key}' 환경 변수가 설정되지 않았습니다.")
                 sys.exit(1)
             
         self.base_url = CONFIG["WP_URL"].rstrip("/")
@@ -68,153 +68,155 @@ class WordPressAutoPoster:
         except: return []
         return []
 
-    def deduplicate_sentences(self, text):
-        """문장 단위 중복 제거 로직 강화 (의미론적 중복 방지)"""
-        sentences = re.split(r'(?<=[.?!])\s+', text)
-        processed = []
-        seen_fingerprints = set()
-        for s in sentences:
-            s = s.strip()
-            if not s: continue
-            # 문장 내 공백 및 특수문자 제거하여 지문 생성
-            fingerprint = re.sub(r'[^가-힣a-zA-Z0-9]', '', s)
-            # 너무 짧거나 이미 본 문장은 제외
-            if len(fingerprint) > 10 and fingerprint not in seen_fingerprints:
-                processed.append(s)
-                seen_fingerprints.add(fingerprint)
-        return " ".join(processed)
+    def get_or_create_tag_ids(self, tags_input):
+        """태그를 확인하고 없으면 생성하여 ID 리스트를 반환합니다."""
+        if not tags_input: return []
+        if isinstance(tags_input, list):
+            tag_names = [str(t).strip() for t in tags_input][:8]
+        else:
+            tag_names = [t.strip() for t in str(tags_input).split(',')][:8]
+            
+        tag_ids = []
+        for name in tag_names:
+            try:
+                search_res = self.session.get(f"{self.base_url}/wp-json/wp/v2/tags?search={name}", headers=self.common_headers)
+                existing = search_res.json()
+                match = next((t for t in existing if t['name'].lower() == name.lower()), None)
+                if match:
+                    tag_ids.append(match['id'])
+                else:
+                    create_res = self.session.post(f"{self.base_url}/wp-json/wp/v2/tags", headers=self.common_headers, json={"name": name})
+                    if create_res.status_code == 201:
+                        tag_ids.append(create_res.json()['id'])
+            except: continue
+        return tag_ids
 
-    def call_gemini(self, prompt, system_instruction, response_mime="text/plain", schema=None):
+    def call_gemini(self, prompt, system_instruction, schema=None):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
-                "responseMimeType": response_mime,
-                "temperature": 0.8, # 다양성 확보
-                "topP": 0.95
+                "responseMimeType": "application/json",
+                "temperature": 0.7,
+                "responseSchema": schema
             }
         }
-        if schema: payload["generationConfig"]["responseSchema"] = schema
         
         for i in range(3):
             try:
                 res = self.session.post(url, json=payload, timeout=120)
                 if res.status_code == 200:
-                    return res.json()['candidates'][0]['content']['parts'][0]['text']
+                    return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
             except: pass
             time.sleep(2 ** i)
         return None
 
     def generate_content(self, news_items):
-        print("--- [Step 2] 고도화된 상태 유지형 순차 생성 시작 ---")
+        print("--- [Step 2] 구조적 콘텐츠 생성 시작 (Gutenberg Integrity) ---")
         news_context = "\n".join([f"- {n['title']}: {n['desc']}" for n in news_items])
         
-        # 1. SEO 최적화 기획안 생성 (Yoast SEO 초점 키프레이즈 추출)
-        plan_instruction = (
-            f"당신은 대한민국 최고의 금융 칼럼니스트입니다. 현재 시점은 2026년 2월입니다.\n"
+        # AI에게는 데이터만 생성하게 하고, 블록 래핑은 파이썬이 수행합니다.
+        system_instruction = (
+            f"당신은 대한민국 최고의 국민연금 금융 전문가입니다. 현재 시점은 2026년 2월입니다.\n"
             f"[최근 주제들] {RECENT_TITLES}\n"
-            f"위 주제들과 완전히 차별화된 새로운 뉴스 기반 기획안을 JSON으로 만드세요.\n"
-            f"반드시 'focus_keyphrase'를 제목과 첫 단락에 포함될 핵심 키워드(단어)로 선정하세요.\n"
-            f"섹션(sections)은 반드시 5개 이상이어야 하며, 각 섹션의 제목(heading)은 검색 의도를 반영해야 합니다."
+            f"위 주제들과 완전히 차별화된 새로운 뉴스 기반 포스팅을 작성하세요.\n\n"
+            f"[엄격 규칙]\n"
+            f"1. 중복 금지: 앞에서 한 말을 다른 문단에서 절대 반복하지 마세요.\n"
+            f"2. SEO 최적화: focus_keyphrase를 제목과 첫 단락에 반드시 포함하세요.\n"
+            f"3. 링크 자연 통합: 문장 내에 '국민연금공단 공식 홈페이지' 등 키워드에 맞춰 링크를 삽입하세요.\n"
+            f"   - https://www.nps.or.kr (국민연금공단 공식 홈페이지)\n"
+            f"   - https://minwon.nps.or.kr (내 곁에 국민연금)\n"
+            f"4. 서명 금지: 인사말, 전문가 이름, 글자 수 안내 등을 절대 포함하지 마세요."
         )
-        plan_schema = {
+
+        schema = {
             "type": "OBJECT",
             "properties": {
                 "title": {"type": "string"},
                 "focus_keyphrase": {"type": "string"},
-                "sections": {
+                "tags": {"type": "string"},
+                "excerpt": {"type": "string"},
+                "blocks": {
                     "type": "ARRAY",
                     "items": {
                         "type": "OBJECT",
                         "properties": {
-                            "heading": {"type": "string"},
-                            "instruction": {"type": "string"},
-                            "required_news_index": {"type": "integer"}
-                        },
-                        "required": ["heading", "instruction", "required_news_index"]
+                            "type": {"type": "string", "enum": ["h2", "h3", "p", "list", "table"]},
+                            "content": {"type": "string"}
+                        }
                     }
-                },
-                "tags": {"type": "string"},
-                "excerpt": {"type": "string"}
+                }
             },
-            "required": ["title", "focus_keyphrase", "sections", "tags", "excerpt"]
+            "required": ["title", "focus_keyphrase", "blocks", "tags", "excerpt"]
         }
         
-        plan_raw = self.call_gemini(f"뉴스 데이터:\n{news_context}\n위 정보를 바탕으로 전문적인 블로그 기획안을 작성해줘.", plan_instruction, "application/json", plan_schema)
-        if not plan_raw: sys.exit(1)
-        plan = json.loads(plan_raw)
-        print(f"기획 완료: {plan['title']} (SEO 키워드: {plan['focus_keyphrase']})")
-
-        # 2. 섹션별 순차 생성 (본문 내 제목 강제 포함 로직)
-        full_body = ""
-        used_content_summary = "" # 반복 방지를 위한 요약 메모리
+        prompt = f"다음 뉴스 데이터를 분석하여 깊이 있는 분석 글을 작성해줘:\n{news_context}"
+        raw_data = self.call_gemini(prompt, system_instruction, schema)
         
-        for i, section in enumerate(plan['sections']):
-            print(f"섹션 {i+1}/{len(plan['sections'])} 생성 중: {section['heading']}")
-            
-            idx = section.get('required_news_index', i)
-            target_news = news_items[idx % len(news_items)] if news_items else {"title": "국민연금", "desc": "가이드"}
-            
-            # 섹션별 프롬프트 고도화
-            section_instruction = (
-                f"금융 전문가로서 블로그의 한 섹션을 작성합니다. '반복'은 절대 금물입니다.\n"
-                f"이미 작성된 핵심 요약(중복 금지): {used_content_summary}\n\n"
-                f"[작성 규정]\n"
-                f"1. 섹션 시작은 반드시 구텐베르크 제목 블록으로 시작하세요: <!-- wp:heading {{\"level\":2}} --><h2>{section['heading']}</h2><!-- /wp:heading -->\n"
-                f"2. 본문은 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 형식을 엄수하세요.\n"
-                f"3. SEO 최적화: 초점 키워드 '{plan['focus_keyphrase']}'를 자연스럽게 문장 속에 포함하세요.\n"
-                f"4. 링크 삽입: 문장 중간에 아래 링크를 <strong>볼드</strong>처리하여 삽입하세요.\n"
-                f"   - <strong><a href='https://www.nps.or.kr' target='_self'>국민연금공단 공식 홈페이지</a></strong>\n"
-                f"5. 설명 방식: 단순히 뉴스를 나열하지 말고 전문적인 '분석'과 '전망'을 600자 이상 서술하세요."
-            )
-            
-            section_body = self.call_gemini(
-                f"전체 제목: {plan['title']}\n현재 섹션: {section['heading']}\n참고 뉴스: {target_news['title']}\n이전 섹션과 겹치지 않는 새로운 내용을 작성해줘.", 
-                section_instruction
-            )
-            
-            if section_body:
-                # 중복 문장 필터링
-                clean_section = self.deduplicate_sentences(section_body)
-                full_body += "\n" + clean_section
-                
-                # 다음 섹션을 위해 현재 섹션의 핵심 요약 업데이트 (AI의 메모리 역할)
-                used_content_summary += f" [{section['heading']} 관련 설명 완료]"
-
-        # 3. 구텐베르크 문법 정제 및 최종 중복 검수
-        full_body = full_body.replace("//wp:", "<!-- /wp:").replace("/wp:", "<!-- /wp:")
-        full_body = re.sub(r'(?<!<!-- )wp:paragraph', r'<!-- wp:paragraph', full_body)
-        full_body = re.sub(r'wp:paragraph(?! -->)', r'wp:paragraph -->', full_body)
+        if not raw_data: sys.exit(1)
         
-        plan['content'] = self.deduplicate_sentences(full_body)
-        return plan
+        # 파이썬 레벨에서 구텐베르크 블록으로 조립 (깨짐 방지)
+        assembled_content = ""
+        seen_paragraphs = set()
+        
+        for block in raw_data['blocks']:
+            b_type = block['type']
+            b_content = block['content'].strip()
+            
+            # 문단 중복 검사 (내용의 지문 생성)
+            fingerprint = re.sub(r'[^가-힣]', '', b_content)
+            if b_type == "p" and (fingerprint in seen_paragraphs or len(fingerprint) < 10):
+                continue
+            seen_paragraphs.add(fingerprint)
+
+            if b_type == "h2":
+                assembled_content += f"<!-- wp:heading {{\"level\":2}} -->\n<h2>{b_content}</h2>\n<!-- /wp:heading -->\n\n"
+            elif b_type == "h3":
+                assembled_content += f"<!-- wp:heading {{\"level\":3} -->\n<h3>{b_content}</h3>\n<!-- /wp:heading -->\n\n"
+            elif b_type == "p":
+                assembled_content += f"<!-- wp:paragraph -->\n<p>{b_content}</p>\n<!-- /wp:paragraph -->\n\n"
+            elif b_type == "list":
+                assembled_content += f"<!-- wp:list -->\n{b_content}\n<!-- /wp:list -->\n\n"
+            elif b_type == "table":
+                assembled_content += f"<!-- wp:table -->\n<figure class=\"wp-block-table\">{b_content}</figure>\n<!-- /wp:table -->\n\n"
+
+        raw_data['assembled_content'] = assembled_content
+        return raw_data
 
     def publish(self, data):
-        print("--- [Step 3] 워드프레스 발행 및 Yoast SEO 적용 ---")
+        print("--- [Step 3] 워드프레스 발행 및 SEO 데이터 전송 ---")
+        tag_ids = self.get_or_create_tag_ids(data.get('tags', ''))
+        
         payload = {
             "title": data['title'],
-            "content": data['content'],
+            "content": data['assembled_content'],
             "excerpt": data['excerpt'],
             "status": "publish",
+            "tags": tag_ids,
             "meta": {
-                "_yoast_wpseo_focuskw": data.get('focus_keyphrase', '') # Yoast SEO 초점 키프레이즈
+                "_yoast_wpseo_focuskw": data.get('focus_keyphrase', '')
             }
         }
+        
         res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=60)
-        return res.status_code == 201
+        
+        if res.status_code == 201:
+            return True
+        else:
+            print(f"❌ 발행 실패 (코드 {res.status_code}): {res.text[:500]}")
+            return False
 
     def run(self):
         news = self.search_naver_news()
         if not news: 
-            print("뉴스 수집 실패")
+            print("뉴스 데이터 수집 실패")
             sys.exit(1)
             
         post_data = self.generate_content(news)
         if self.publish(post_data):
             print(f"🎉 발행 성공: {post_data['title']} (SEO 키워드: {post_data.get('focus_keyphrase')})")
         else:
-            print(f"발행 실패")
             sys.exit(1)
 
 if __name__ == "__main__":
