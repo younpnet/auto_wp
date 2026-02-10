@@ -37,21 +37,21 @@ class WordPressAutoPoster:
         if not CONFIG["WP_URL"].startswith("http"):
             print("❌ 오류: WP_URL은 반드시 https:// 로 시작해야 합니다.")
             sys.exit(1)
-        CONFIG["WP_URL"] = CONFIG["WP_URL"].rstrip("/")
+            
+        self.base_url = CONFIG["WP_URL"].rstrip("/")
+        self.session = requests.Session()
 
         user_pass = f"{CONFIG['WP_USERNAME']}:{CONFIG['WP_APP_PASSWORD']}"
-        self.auth = base64.b64encode(user_pass.encode()).decode()
+        self.auth_header = base64.b64encode(user_pass.encode()).decode()
         
-        # [고도화] 일반적인 브라우저처럼 보이도록 User-Agent 보강
-        self.headers = {
-            "Authorization": f"Basic {self.auth}",
+        self.common_headers = {
+            "Authorization": f"Basic {self.auth_header}",
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
         }
 
     def random_sleep(self):
-        # 0~3600초 랜덤 대기
         wait_seconds = random.randint(0, 3600) 
         minutes = wait_seconds // 60
         seconds = wait_seconds % 60
@@ -67,7 +67,7 @@ class WordPressAutoPoster:
         params = {"query": query, "display": 5, "sort": "sim"}
         try:
             if not CONFIG["NAVER_CLIENT_ID"]: return "국민연금 최신 이슈"
-            res = requests.get(url, headers=headers, params=params, timeout=10)
+            res = self.session.get(url, headers=headers, params=params, timeout=15)
             if res.status_code == 200:
                 items = res.json().get('items', [])
                 return "\n".join([f"제목: {re.sub('<.*?>', '', i['title'])}\n내용: {re.sub('<.*?>', '', i['description'])}" for i in items])
@@ -75,18 +75,24 @@ class WordPressAutoPoster:
         return "국민연금 제도 변화 가이드"
 
     def generate_content(self, topic_context):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         
-        # JSON 파손 방지를 위한 강력한 가이드라인 추가
+        # 구텐베르크 블록 형식을 강제하는 시스템 프롬프트
         system_prompt = (
-            "당신은 금융 전문가입니다. 3,000자 이상의 워드프레스 블로그 포스팅을 JSON 형식으로 작성하세요.\n"
-            "필드명은 'title', 'content', 'excerpt', 'tags'를 사용하세요.\n"
-            "중요: 모든 텍스트 데이터 내의 큰따옴표(\")는 반드시 백슬래시(\\)를 사용하여 이스케이프(\\\") 처리하세요.\n"
-            "마크다운 코드 블록(```json)을 사용하지 말고 순수 JSON 데이터만 응답하세요."
+            "당신은 대한민국 최고의 금융 전문가입니다. 3,000자 이상의 워드프레스 포스팅을 JSON 형식으로 작성하세요.\n"
+            "필드명: 'title', 'content', 'excerpt', 'tags'\n\n"
+            "[중요: 구텐베르크 블록 형식 지침]\n"
+            "모든 본문 요소는 워드프레스 구텐베르크 블록 주석으로 감싸야 합니다.\n"
+            "- 단락: <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph -->\n"
+            "- 제목(h2): <!-- wp:heading {\"level\":2} --><h2>제목</h2><!-- /wp:heading -->\n"
+            "- 제목(h3): <!-- wp:heading {\"level\":3} --><h3>제목</h3><!-- /wp:heading -->\n"
+            "- 목록: <!-- wp:list --><ul><li>항목</li></ul><!-- /wp:list -->\n"
+            "- 표: <!-- wp:table --><figure class=\"wp-block-table\"><table>...</table></figure><!-- /wp:table -->\n\n"
+            "마크다운 강조(**) 대신 <strong> 태그를 사용하고, 모든 따옴표는 JSON 규격에 맞게 이스케이프하세요."
         )
         
         payload = {
-            "contents": [{"parts": [{"text": f"뉴스 참고: {topic_context}\n\n위 내용을 바탕으로 포스팅해줘."}]}],
+            "contents": [{"parts": [{"text": f"뉴스 데이터:\n{topic_context}\n\n위 정보를 바탕으로 구텐베르크 블록 방식으로 상세 포스팅을 작성해줘."}]}],
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "generationConfig": {
                 "responseMimeType": "application/json"
@@ -94,19 +100,11 @@ class WordPressAutoPoster:
         }
         
         try:
-            res = requests.post(url, json=payload, timeout=120)
+            res = self.session.post(api_url, json=payload, timeout=120)
             if res.status_code == 200:
                 raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-                
-                # 가끔 포함될 수 있는 마크다운 코드 블록 기호 제거
                 clean_json_str = re.sub(r'```json|```', '', raw_text).strip()
-                
-                try:
-                    return json.loads(clean_json_str)
-                except json.JSONDecodeError as e:
-                    print(f"❌ JSON 파싱 오류: {e}")
-                    print(f"원본 텍스트 일부: {clean_json_str[:200]}...")
-                    sys.exit(1)
+                return json.loads(clean_json_str)
             else:
                 print(f"❌ Gemini 오류: {res.text}")
                 sys.exit(1)
@@ -115,7 +113,7 @@ class WordPressAutoPoster:
             sys.exit(1)
 
     def publish(self, data):
-        endpoint = f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts"
+        endpoint = f"{self.base_url}/wp-json/wp/v2/posts"
         payload = {
             "title": data['title'],
             "content": data['content'],
@@ -125,41 +123,37 @@ class WordPressAutoPoster:
         
         try:
             print(f"발행 시도: {endpoint}")
-            res = requests.post(endpoint, headers=self.headers, json=payload, timeout=30)
+            res = self.session.post(endpoint, headers=self.common_headers, json=payload, timeout=30)
             
-            # [고도화] 보안 차단(JS Challenge) 감지 로직
-            if "slowAES" in res.text or "CUPID" in res.text or "<script" in res.text:
-                print("\n" + "="*50)
-                print("❌ 서버 보안 솔루션(WAF)에 의해 차단되었습니다.")
-                print("이 현상은 호스팅사(Cafe24 등)의 '스팸 방지' 기능 때문입니다.")
-                print("\n[해결 방법]")
-                print("1. 호스팅 관리 페이지에서 'REST API 차단' 해제")
-                print("2. '스팸 필터' 또는 '보안 실드' 설정에서 API 접근 허용")
-                print("3. 워드프레스 보안 플러그인(Wordfence 등) 일시 중지")
-                print("="*50 + "\n")
+            content = res.text
+            if "slowAES" in content or "CUPID" in content or "<script" in content:
+                print("\n" + "="*60)
+                print("❌ 서버 보안 차단 감지 (WAF/Cafe24 스팸방지)")
+                print("해결: 호스팅 관리에서 'REST API 차단' 해제 및 '스팸방지' 설정을 확인하세요.")
+                print("="*60 + "\n")
                 return False
 
             if res.status_code == 201:
                 return True
             else:
                 print(f"❌ 실패 (코드: {res.status_code})")
-                print(f"서버 응답: {res.text[:500]}")
+                print(f"서버 응답 요약: {content[:300]}")
                 return False
         except Exception as e:
-            print(f"❌ 통신 예외: {e}")
+            print(f"❌ 통신 예외 발생: {e}")
             return False
 
     def run(self):
-        # 자동화 시에는 random_sleep()을 활성화하세요.
+        # 실사용 시 random_sleep() 활성화 권장
         # self.random_sleep()
         print("1. 정보 수집 중...")
         news = self.search_naver_news()
-        print("2. 본문 생성 중...")
+        print("2. 구텐베르크 블록 콘텐츠 생성 중...")
         post_data = self.generate_content(news)
         if post_data:
             print(f"3. 발행 중: {post_data['title']}")
             if self.publish(post_data):
-                print(f"🎉 포스팅 성공!")
+                print(f"🎉 구텐베르크 포스팅 성공!")
             else:
                 sys.exit(1)
 
