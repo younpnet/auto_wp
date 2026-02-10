@@ -90,128 +90,105 @@ class WordPressAutoPoster:
         text = text.replace("<!-- <!--", "<!--").replace("--> -->", "-->")
         return text
 
-    def deduplicate_content(self, content):
-        """문단 단위로 분리하여 중복된 문단을 물리적으로 제거합니다."""
-        # 구텐베르크 블록 단위로 쪼개기
-        blocks = re.split(r'(<!-- wp:.*? -->)', content)
-        
-        seen_text = set()
-        new_blocks = []
-        
-        for i in range(len(blocks)):
-            block = blocks[i]
-            # 주석이 아닌 실제 텍스트 내용 추출 (공백 및 태그 제거)
-            clean_text = re.sub(r'<[^>]+>', '', block).strip()
-            clean_text = re.sub(r'<!--.*?-->', '', clean_text).strip()
-            
-            if not clean_text or len(clean_text) < 20: # 짧은 문구나 마커는 통과
-                new_blocks.append(block)
-                continue
-            
-            # 텍스트의 앞 30자만 비교하여 중복 여부 판단 (유사 문장 방지)
-            fingerprint = clean_text[:40]
-            if fingerprint not in seen_text:
-                seen_text.add(fingerprint)
-                new_blocks.append(block)
-            else:
-                print(f"🗑️ 중복 단락 제거됨: {clean_text[:30]}...")
-                # 만약 이전 블록이 마커였다면 그것도 같이 제거하기 위해 pop 시도
-                if len(new_blocks) > 0 and "<!-- wp:" in new_blocks[-1]:
-                    new_blocks.pop()
-        
-        return "".join(new_blocks)
-
-    def is_content_repetitive(self, content):
-        """본문에 동일한 문장이 과도하게 반복되는지 최종 검증합니다."""
-        plain_text = re.sub(r'<[^>]+>', '', content)
-        plain_text = re.sub(r'<!--.*?-->', '', plain_text)
-        sentences = re.split(r'\.|\?|\!', plain_text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
-        
-        if not sentences: return False
-        
-        duplicate_count = 0
-        for s in set(sentences):
-            if sentences.count(s) > 2:
-                duplicate_count += 1
-                
-        # 중복 문장 종류가 3개 이상이면 품질 부적합 판정
-        return duplicate_count >= 3
-
     def clean_meta_text(self, text):
-        """불필요한 글자 수 안내나 전문가 서명을 제거합니다."""
-        patterns = [
-            r'\(총 문자 수.*?\)', 
-            r'\[대한민국 금융 전문가.*?\]', 
-            r'글자 수:.*?\d+자', 
-            r'작성자:.*',
-            r'\d+자 내외로 작성되었습니다',
-            r'이 포스팅은.*?작성되었습니다'
-        ]
+        patterns = [r'\(총 문자 수.*?\)', r'\[대한민국 금융 전문가.*?\]', r'글자 수:.*?\d+자', r'작성자:.*']
         for pattern in patterns:
             text = re.sub(pattern, '', text, flags=re.IGNORECASE)
         return text.strip()
 
-    def generate_content(self, topic_context):
-        print("--- [Step 2] Gemini AI 전략적 콘텐츠 생성 중... ---")
+    def call_gemini(self, prompt, system_instruction, response_mime="text/plain", schema=None):
+        """Gemini API 호출 통합 함수"""
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         
-        strategy = random.choice(["NEWS_ANALYSIS", "INFORMATIONAL_GUIDE"])
-        
-        system_prompt = (
-            f"당신은 대한민국 최고의 국민연금 전문가입니다. 현재 시점은 2026년 2월입니다.\n"
-            f"[최근 발행된 주제 리스트]\n{RECENT_TITLES}\n\n"
-            f"[엄격 지침 - 반복 금지 프로토콜]\n"
-            f"1. 중복 생성 금지: 글자 수를 채우기 위해 동일한 내용, 문장, 혹은 단락을 반복적으로 작성하는 행위를 '절대' 금지합니다.\n"
-            f"2. 내용 확장 전략: 3,000자 이상의 분량을 확보할 때 정보를 반복하지 말고 다음 섹션을 추가하세요.\n"
-            f"   - 관련 법령의 구체적 근거\n"
-            f"   - 실제 수혜자 시뮬레이션 사례 (Case Study)\n"
-            f"   - 해외 연금 제도와의 비교 분석\n"
-            f"   - 자주 묻는 질문(Q&A) 5가지 이상\n"
-            f"3. SEO 제목: 선정된 '초점 키프레이즈'가 제목의 앞부분에 반드시 포함되도록 구성하세요.\n"
-            f"4. 구텐베르크 마커: 반드시 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 형식을 사용하세요.\n"
-            f"5. 링크: 아래 링크를 반드시 포함하고 <strong> 태그로 감싸 볼드 처리하세요.\n"
-            f"   - <strong><a href='https://www.nps.or.kr' target='_self'>국민연금공단 공식 홈페이지</a></strong>\n"
-            f"   - <strong><a href='https://minwon.nps.or.kr' target='_self'>내 곁에 국민연금(내 연금 조회)</a></strong>"
-        )
-        
         payload = {
-            "contents": [{"parts": [{"text": f"뉴스 데이터:\n{topic_context}\n\n전략: {strategy}. 중복 없이 3,000자 이상의 매우 상세한 장문 포스팅을 JSON(title, content, excerpt, tags, focus_keyphrase)으로 작성해줘."}]}],
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": prompt}]}],
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
-                "responseMimeType": "application/json",
-                "temperature": 0.9 # 다양성을 높여 패턴 반복 방지
+                "responseMimeType": response_mime,
+                "temperature": 0.7
             }
         }
-        
-        # 반복 검출 시 최대 2회까지 재생성 시도
-        for attempt in range(3):
+        if schema:
+            payload["generationConfig"]["responseSchema"] = schema
+
+        for i in range(3):
             try:
                 res = self.session.post(url, json=payload, timeout=120)
                 if res.status_code == 200:
-                    raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-                    data = json.loads(re.sub(r'```json|```', '', raw_text).strip())
-                    
-                    data['content'] = self.clean_meta_text(data['content'])
-                    data['content'] = self.fix_gutenberg_content(data['content'])
-                    
-                    # 1. 물리적 중복 단락 제거
-                    data['content'] = self.deduplicate_content(data['content'])
-                    
-                    # 2. 품질 검사 (반복률 확인)
-                    if self.is_content_repetitive(data['content']):
-                        print(f"⚠️ 품질 부적합(반복 감지). 재생성을 시도합니다. (시도 {attempt+1}/3)")
-                        continue
-                    
-                    print(f"키워드 추출 완료: {data.get('focus_keyphrase', '없음')}")
-                    return data
-                else:
-                    print(f"API 오류: {res.text}")
-            except Exception as e:
-                print(f"에러 발생: {e}")
-            time.sleep(5)
+                    return res.json()['candidates'][0]['content']['parts'][0]['text']
+            except:
+                pass
+            time.sleep(2 ** i)
+        return None
+
+    def generate_content(self, topic_context):
+        print("--- [Step 2] 로직 변경: 섹션별 분할 생성 시작 ---")
+        
+        # 1. 목차(Outline) 생성
+        outline_instruction = (
+            f"당신은 국민연금 전문가입니다. 현재 2026년 2월 기준이며, 중복을 피해 독창적인 글을 써야 합니다.\n"
+            f"[최근 발행 리스트] {RECENT_TITLES}\n"
+            f"위 주제들과 겹치지 않는 새로운 제목과 상세 목차(최소 6개 섹션)를 JSON으로 구성하세요."
+        )
+        outline_schema = {
+            "type": "OBJECT",
+            "properties": {
+                "title": {"type": "string"},
+                "focus_keyphrase": {"type": "string"},
+                "sections": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "heading": {"type": "string"},
+                            "description": {"type": "string"}
+                        }
+                    }
+                },
+                "tags": {"type": "string"},
+                "excerpt": {"type": "string"}
+            }
+        }
+        
+        outline_raw = self.call_gemini(
+            f"뉴스 데이터:\n{topic_context}\n위 내용을 바탕으로 최고의 블로그 기획안을 짜줘.",
+            outline_instruction, "application/json", outline_schema
+        )
+        
+        if not outline_raw: sys.exit(1)
+        plan = json.loads(outline_raw)
+        print(f"기획 완료: {plan['title']} (섹션 수: {len(plan['sections'])})")
+
+        # 2. 섹션별 본문 생성
+        full_body = ""
+        for i, section in enumerate(plan['sections']):
+            print(f"섹션 {i+1}/{len(plan['sections'])} 생성 중: {section['heading']}")
             
-        sys.exit(1)
+            section_instruction = (
+                f"금융 전문가로서 블로그의 한 섹션을 작성합니다. 이전 섹션의 내용을 절대 반복하지 마세요.\n"
+                f"현재 작성할 부분: {section['heading']} ({section['description']})\n"
+                f"반드시 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 또는 <!-- wp:heading --> 주석을 포함한 구텐베르크 형식을 지키세요.\n"
+                f"한 문단은 3문장 이내로 짧게 구성하고, 전문적인 데이터를 포함하여 풍부하게 설명하세요."
+            )
+            
+            section_body = self.call_gemini(
+                f"전체 제목: {plan['title']}\n현재까지 작성된 글 요약: {full_body[-500:] if full_body else '시작 단계'}\n위 흐름에 이어지게 '{section['heading']}' 부분을 작성해줘.",
+                section_instruction
+            )
+            
+            if section_body:
+                full_body += "\n" + section_body
+
+        # 3. 링크 및 특수 마커 추가
+        links = (
+            f"\n<!-- wp:paragraph --><p><strong><a href='https://www.nps.or.kr' target='_self'>국민연금공단 공식 홈페이지</a></strong></p><!-- /wp:paragraph -->"
+            f"\n<!-- wp:paragraph --><p><strong><a href='https://minwon.nps.or.kr' target='_self'>내 곁에 국민연금(내 연금 조회)</a></strong></p><!-- /wp:paragraph -->"
+        )
+        
+        plan['content'] = self.fix_gutenberg_content(full_body + links)
+        plan['content'] = self.clean_meta_text(plan['content'])
+        
+        return plan
 
     def publish(self, data):
         print("--- [Step 3] 워드프레스 발행 중... ---")
