@@ -173,7 +173,8 @@ class WordPressAutoPoster:
             if b_type == "h2":
                 assembled_content += f"<!-- wp:heading {{\"level\":2}} -->\n<h2>{b_content}</h2>\n<!-- /wp:heading -->\n\n"
             elif b_type == "h3":
-                assembled_content += f"<!-- wp:heading {{\"level\":3} -->\n<h3>{b_content}</h3>\n<!-- /wp:heading -->\n\n"
+                # f-string 내 중괄호 이스케이프 수정: { -> {{, } -> }}
+                assembled_content += f"<!-- wp:heading {{\"level\":3}} -->\n<h3>{b_content}</h3>\n<!-- /wp:heading -->\n\n"
             elif b_type == "p":
                 assembled_content += f"<!-- wp:paragraph -->\n<p>{b_content}</p>\n<!-- /wp:paragraph -->\n\n"
             elif b_type == "list":
