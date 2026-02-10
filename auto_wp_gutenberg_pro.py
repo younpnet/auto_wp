@@ -169,7 +169,8 @@ class WordPressAutoPoster:
         
         assembled = ""
         seen_para = set()
-        for b in data['blocks']:
+        # i 변수가 루프 인덱스로 사용되도록 enumerate를 적용하여 NameError 수정
+        for i, b in enumerate(data['blocks']):
             content = b['content'].strip()
             # 인사말 패턴이 포함된 경우 코드 레벨에서 한 번 더 필터링 (안전장치)
             if i == 0 and b['type'] == "p" and any(x in content for x in ["안녕", "안녕하십니까", "자산관리사", "전문가입니다"]):
