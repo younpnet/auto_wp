@@ -23,11 +23,25 @@ CONFIG = {
 
 class WordPressAutoPoster:
     def __init__(self):
-        # 설정값 검증
-        if not CONFIG["WP_URL"] or not CONFIG["WP_APP_PASSWORD"]:
-            print("❌ 오류: WP_URL 또는 WP_APP_PASSWORD가 설정되지 않았습니다.")
+        # 1. 설정값 존재 여부 검증 (디버깅 강화)
+        print("--- 환경 변수 점검 ---")
+        for key in ["WP_URL", "WP_APP_PASSWORD", "GEMINI_API_KEY"]:
+            val = CONFIG[key]
+            if not val:
+                print(f"❌ 오류: '{key}' 환경 변수가 비어 있습니다. Github Secrets 설정을 확인하세요.")
+            else:
+                # 보안을 위해 앞글자만 출력
+                print(f"✅ '{key}' 로드 완료: {val[:8]}...")
+
+        if not CONFIG["WP_URL"] or not CONFIG["WP_APP_PASSWORD"] or not CONFIG["GEMINI_API_KEY"]:
             sys.exit(1)
             
+        # 2. URL 형식 검증
+        if not CONFIG["WP_URL"].startswith("http"):
+            print("❌ 오류: WP_URL은 반드시 https:// 또는 http://로 시작해야 합니다.")
+            sys.exit(1)
+        CONFIG["WP_URL"] = CONFIG["WP_URL"].rstrip("/")
+
         user_pass = f"{CONFIG['WP_USERNAME']}:{CONFIG['WP_APP_PASSWORD']}"
         self.auth = base64.b64encode(user_pass.encode()).decode()
         self.headers = {
@@ -36,12 +50,9 @@ class WordPressAutoPoster:
         }
 
     def random_sleep(self):
-        """테스트 시에는 대기를 건너뛰고 싶다면 아래 randint를 (0, 10) 정도로 수정하세요."""
-        # 7시~8시 사이 랜덤 발행 (0~3600초)
-        wait_seconds = random.randint(0, 3600)
-        minutes = wait_seconds // 60
-        seconds = wait_seconds % 60
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 랜덤 대기 시작: {minutes}분 {seconds}초 후 포스팅을 시작합니다...")
+        # 테스트를 위해 대기 시간을 1~5초로 줄였습니다. (실제 운영 시 random.randint(0, 3600) 권장)
+        wait_seconds = random.randint(1, 5) 
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 시작 전 대기: {wait_seconds}초...")
         time.sleep(wait_seconds)
 
     def search_naver_news(self, query="국민연금 개혁"):
@@ -52,28 +63,25 @@ class WordPressAutoPoster:
         }
         params = {"query": query, "display": 5, "sort": "sim"}
         try:
-            res = requests.get(url, headers=headers, params=params)
+            res = requests.get(url, headers=headers, params=params, timeout=10)
             if res.status_code == 200:
                 items = res.json().get('items', [])
+                if not items: return "국민연금 최신 제도 안내"
                 return "\n".join([f"제목: {re.sub('<.*?>', '', i['title'])}\n내용: {re.sub('<.*?>', '', i['description'])}" for i in items])
+            else:
+                print(f"⚠️ 네이버 뉴스 API 경고 (코드 {res.status_code})")
+                return "국민연금 최신 제도 및 수령액 안내"
         except Exception as e:
-            print(f"⚠️ 뉴스 검색 중 오류 발생(무시하고 진행): {e}")
+            print(f"⚠️ 뉴스 검색 중 오류 발생: {e}")
             return "국민연금 최신 제도 안내"
-        return ""
 
     def generate_content(self, topic_context):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         
         system_prompt = """당신은 대한민국 최고의 금융 전문가입니다. 2026년 최신 뉴스를 기반으로 블로그 글을 작성하세요.
-        [규칙]
-        1. 인사말 및 자기소개 금지. 바로 본론으로 시작.
-        2. 구텐베르크 블록 마커(<!-- wp:paragraph --> 등)를 사용하여 구조화.
-        3. 한 문단은 3문장 이내로 짧게 구성.
-        4. 마크다운 기호(**, #) 사용 금지. 강조는 <strong> 태그 사용.
-        5. 수치는 <table> 태그로 정리.
-        6. 전체 분량은 3,000자 이상의 매우 상세한 정보 제공."""
+        제목(title), 본문(content), 요약(excerpt), 태그(tags)를 포함한 JSON으로 응답하세요."""
 
-        prompt = f"다음 최신 뉴스를 참고하여 2026년 기준의 전문적인 포스팅을 작성해줘:\n{topic_context}"
+        prompt = f"다음 뉴스를 참고하여 3,000자 이상의 전문적인 워드프레스 블로그 포스팅을 작성해줘:\n{topic_context}"
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -93,11 +101,15 @@ class WordPressAutoPoster:
             }
         }
 
-        res = requests.post(url, json=payload)
-        if res.status_code == 200:
-            return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-        else:
-            print(f"❌ Gemini API 오류: {res.text}")
+        try:
+            res = requests.post(url, json=payload, timeout=120)
+            if res.status_code == 200:
+                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
+            else:
+                print(f"❌ Gemini API 오류 (코드 {res.status_code}): {res.text}")
+                sys.exit(1)
+        except Exception as e:
+            print(f"❌ 콘텐츠 생성 중 예외 발생: {e}")
             sys.exit(1)
 
     def publish(self, data):
@@ -107,27 +119,33 @@ class WordPressAutoPoster:
             "excerpt": data['excerpt'],
             "status": "publish"
         }
-        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload)
         
-        if res.status_code == 201:
-            return True
-        else:
-            print(f"❌ 워드프레스 발행 실패 (상태 코드: {res.status_code})")
-            print(f"응답 내용: {res.text}")
+        try:
+            print(f"워드프레스 발행 시도: {CONFIG['WP_URL']}/wp-json/wp/v2/posts")
+            res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload, timeout=30)
+            if res.status_code == 201:
+                return True
+            else:
+                print(f"❌ 워드프레스 발행 실패 (상태 코드: {res.status_code})")
+                print(f"상세 내용: {res.text}")
+                return False
+        except Exception as e:
+            print(f"❌ 워드프레스 통신 중 예외 발생: {e}")
             return False
 
     def run(self):
-        # 테스트를 위해 랜덤 대기를 건너뛰고 싶으면 아래 줄을 주석 처리(#) 하세요.
         self.random_sleep()
-        
+        print("1. 뉴스 검색 중...")
         news = self.search_naver_news()
+        print("2. Gemini AI 본문 생성 중...")
         post_data = self.generate_content(news)
         
         if post_data:
+            print(f"3. 워드프레스 발행 중: {post_data['title']}")
             if self.publish(post_data):
-                print(f"🎉 포스팅 성공: {post_data['title']}")
+                print(f"🎉 포스팅 성공!")
             else:
-                sys.exit(1) # 실패 시 에러 종료 (GitHub Actions에 빨간불 표시됨)
+                sys.exit(1)
 
 if __name__ == "__main__":
     WordPressAutoPoster().run()
