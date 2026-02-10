@@ -21,7 +21,7 @@ CONFIG = {
     "TEXT_MODEL": "gemini-2.5-flash-preview-09-2025"
 }
 
-# 최근 발행된 주제 (중복 방지)
+# 최근 발행된 주제 (중복 방지용 리스트)
 RECENT_TITLES = [
     "국민연금 수령시기 연기 혜택 연기연금 인상률 신청 방법 최대 36% 증액 꿀팁 (2026)",
     "국민연금 연말정산 환급금 받는 법 연금소득세 공제 부양가족 신고 총정리 (2026년)",
@@ -63,20 +63,27 @@ class WordPressAutoPoster:
         try:
             res = self.session.get(url, headers=headers, params=params, timeout=15)
             if res.status_code == 200:
-                return [{"title": re.sub('<.*?>', '', i['title']), "desc": re.sub('<.*?>', '', i['description'])} for i in items] if (items := res.json().get('items')) else []
+                items = res.json().get('items', [])
+                return [{"title": re.sub('<.*?>', '', i['title']), "desc": re.sub('<.*?>', '', i['description'])} for i in items]
         except: return []
+        return []
 
     def deduplicate_sentences(self, text):
-        """문장 단위로 쪼개어 물리적으로 중복을 제거합니다 (반복 이슈 해결의 핵심)"""
-        sentences = re.split(r'(\.|\?|\!)\s+', text)
+        """문장 단위로 쪼개어 동일한 의미의 중복 문장을 물리적으로 제거합니다."""
+        # 문장 경계 식별 (. ? ! 뒤에 공백)
+        sentences = re.split(r'(?<=[.?!])\s+', text)
         processed = []
         seen = set()
-        for i in range(0, len(sentences)-1, 2):
-            s = sentences[i].strip() + (sentences[i+1] if i+1 < len(sentences) else "")
+        
+        for s in sentences:
+            s = s.strip()
+            if not s: continue
+            # 공백 제거 및 소문자화하여 문장 지문(fingerprint) 생성
             fingerprint = re.sub(r'\s+', '', s)
-            if fingerprint not in seen and len(fingerprint) > 10:
+            if fingerprint not in seen and len(fingerprint) > 5:
                 processed.append(s)
                 seen.add(fingerprint)
+        
         return " ".join(processed)
 
     def call_gemini(self, prompt, system_instruction, response_mime="text/plain", schema=None):
@@ -84,7 +91,11 @@ class WordPressAutoPoster:
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
-            "generationConfig": {"responseMimeType": response_mime, "temperature": 0.7}
+            "generationConfig": {
+                "responseMimeType": response_mime,
+                "temperature": 0.8, # 다양성 확보를 위해 온도 조절
+                "topP": 0.9
+            }
         }
         if schema: payload["generationConfig"]["responseSchema"] = schema
         
@@ -93,20 +104,23 @@ class WordPressAutoPoster:
                 res = self.session.post(url, json=payload, timeout=120)
                 if res.status_code == 200:
                     return res.json()['candidates'][0]['content']['parts'][0]['text']
+                else:
+                    print(f"API 오류 (코드 {res.status_code}): {res.text[:200]}")
             except: pass
             time.sleep(2 ** i)
         return None
 
     def generate_content(self, news_items):
-        print("--- [Step 2] 고도화된 섹션별 생성 프로세스 작동 ---")
+        print("--- [Step 2] 고도화된 상태 유지형 순차 생성 시작 ---")
         news_context = "\n".join([f"- {n['title']}: {n['desc']}" for n in news_items])
         
-        # 1. 포스팅 기획안 생성 (Yoast SEO 포함)
+        # 1. 고유한 주제 및 상세 목차 기획
         plan_instruction = (
-            f"당신은 대한민국 최고의 국민연금 전문가입니다. 현재 2026년 2월 기준입니다.\n"
-            f"[최근 주제] {RECENT_TITLES}\n"
-            f"위 주제와 겹치지 않는 새로운 뉴스 기반 기획안을 JSON으로 만드세요.\n"
-            f"반드시 'focus_keyphrase'를 제목에 포함된 핵심 키워드로 1개 선정하세요."
+            f"당신은 대한민국 최고의 금융 칼럼니스트입니다. 현재 시점은 2026년 2월입니다.\n"
+            f"[최근 주제 리스트] {RECENT_TITLES}\n"
+            f"위 주제들과 겹치지 않는 새로운 관점의 글을 기획하세요.\n"
+            f"반드시 'focus_keyphrase'를 제목에 포함된 핵심 키워드로 선정하세요.\n"
+            f"섹션은 최소 5개로 구성하며, 각 섹션의 목적을 명확히 정의하세요."
         )
         plan_schema = {
             "type": "OBJECT",
@@ -119,7 +133,8 @@ class WordPressAutoPoster:
                         "type": "OBJECT",
                         "properties": {
                             "heading": {"type": "string"},
-                            "instruction": {"type": "string"}
+                            "instruction": {"type": "string"},
+                            "required_news_index": {"type": "integer"}
                         }
                     }
                 },
@@ -128,39 +143,47 @@ class WordPressAutoPoster:
             }
         }
         
-        plan_raw = self.call_gemini(f"뉴스 데이터:\n{news_context}\n위 정보를 바탕으로 독창적인 기획안을 짜줘.", plan_instruction, "application/json", plan_schema)
+        plan_raw = self.call_gemini(f"뉴스 데이터:\n{news_context}\n위 정보를 바탕으로 독창적인 블로그 기획안을 작성해줘.", plan_instruction, "application/json", plan_schema)
         if not plan_raw: sys.exit(1)
         plan = json.loads(plan_raw)
         print(f"기획 완료: {plan['title']} (키워드: {plan['focus_keyphrase']})")
 
-        # 2. 섹션별 본문 생성 (반복 방지를 위해 상태 전달)
+        # 2. 섹션별 본문 누적 생성 (이전 섹션 피드백 포함)
         full_body = ""
         for i, section in enumerate(plan['sections']):
             print(f"섹션 {i+1}/{len(plan['sections'])} 생성 중: {section['heading']}")
             
+            # 특정 뉴스 데이터를 각 섹션에 배정하여 정보 중복 방지
+            target_news = news_items[section['required_news_index'] % len(news_items)]
+            
             section_instruction = (
-                f"금융 칼럼니스트로서 블로그의 한 섹션을 작성합니다. 이전 섹션의 내용을 절대 반복하지 마세요.\n"
-                f"이미 작성된 내용(반복 금지): {full_body[-800:] if full_body else '없음'}\n"
-                f"주제: {section['heading']}\n"
-                f"지침: {section['instruction']}\n\n"
+                f"당신은 금융 전문가입니다. 이전 섹션의 내용을 '절대' 반복하지 마세요.\n"
+                f"이미 작성된 본문(이 내용은 다시 쓰지 마세요): {full_body[-1200:] if full_body else '없음'}\n\n"
+                f"현재 주제: {section['heading']}\n"
+                f"참고 뉴스: {target_news['title']}\n"
+                f"작성 지침: {section['instruction']}\n\n"
                 f"[엄격 규칙]\n"
                 f"1. 반드시 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 형식을 사용하세요.\n"
-                f"2. 필요한 경우 문장 중간에 자연스럽게 아래 링크를 <strong>볼드</strong>처리하여 삽입하세요.\n"
+                f"2. 문장 속에 자연스럽게 다음 링크를 <strong>볼드</strong>처리하여 삽입하세요.\n"
                 f"   - <strong><a href='https://www.nps.or.kr' target='_self'>국민연금공단 공식 홈페이지</a></strong>\n"
                 f"   - <strong><a href='https://minwon.nps.or.kr' target='_self'>내 곁에 국민연금(내 연금 조회)</a></strong>\n"
-                f"3. 링크를 글 마지막에 따로 빼지 마세요. 문장 속에 녹여내세요."
+                f"3. 중복된 문장이나 이미 설명한 논리를 다시 언급하면 탈락입니다. 새로운 정보를 제공하세요."
             )
             
-            section_body = self.call_gemini(f"전체 제목: {plan['title']}\n현재 섹션 '{section['heading']}'에 대해 600자 이상 상세히 써줘.", section_instruction)
+            section_body = self.call_gemini(f"전체 제목: {plan['title']}\n현재 '{section['heading']}' 부분에 대해 600자 이상 아주 상세하게 써줘.", section_instruction)
+            
             if section_body:
-                full_body += "\n" + self.deduplicate_sentences(section_body)
+                # 문장 단위 중복 제거 후 누적
+                clean_section = self.deduplicate_sentences(section_body)
+                full_body += "\n" + clean_section
 
-        # 3. 구텐베르크 문법 보정
+        # 3. 구텐베르크 문법 최종 보정 및 중복 검수
         full_body = full_body.replace("//wp:", "<!-- /wp:").replace("/wp:", "<!-- /wp:")
         full_body = re.sub(r'(?<!<!-- )wp:paragraph', r'<!-- wp:paragraph', full_body)
         full_body = re.sub(r'wp:paragraph(?! -->)', r'wp:paragraph -->', full_body)
         
-        plan['content'] = full_body
+        # 전체 텍스트에서 한 번 더 문장 중복 검사
+        plan['content'] = self.deduplicate_sentences(full_body)
         return plan
 
     def publish(self, data):
@@ -180,12 +203,15 @@ class WordPressAutoPoster:
     def run(self):
         news = self.search_naver_news()
         if not news: 
-            print("뉴스 데이터 부족")
+            print("뉴스 데이터 부족으로 종료")
             sys.exit(1)
+            
         post_data = self.generate_content(news)
         if self.publish(post_data):
             print(f"🎉 발행 성공: {post_data['title']}")
+            print(f"SEO 키워드: {post_data.get('focus_keyphrase')}")
         else:
+            print("발행 실패")
             sys.exit(1)
 
 if __name__ == "__main__":
