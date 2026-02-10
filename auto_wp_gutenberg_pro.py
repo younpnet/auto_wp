@@ -69,17 +69,19 @@ class WordPressAutoPoster:
         return []
 
     def deduplicate_sentences(self, text):
-        """문장 단위 중복 제거 로직 강화"""
+        """문장 단위 중복 제거 로직 강화 (의미론적 중복 방지)"""
         sentences = re.split(r'(?<=[.?!])\s+', text)
         processed = []
-        seen = set()
+        seen_fingerprints = set()
         for s in sentences:
             s = s.strip()
             if not s: continue
-            fingerprint = re.sub(r'\s+', '', s)
-            if fingerprint not in seen and len(fingerprint) > 10:
+            # 문장 내 공백 및 특수문자 제거하여 지문 생성
+            fingerprint = re.sub(r'[^가-힣a-zA-Z0-9]', '', s)
+            # 너무 짧거나 이미 본 문장은 제외
+            if len(fingerprint) > 10 and fingerprint not in seen_fingerprints:
                 processed.append(s)
-                seen.add(fingerprint)
+                seen_fingerprints.add(fingerprint)
         return " ".join(processed)
 
     def call_gemini(self, prompt, system_instruction, response_mime="text/plain", schema=None):
@@ -89,7 +91,7 @@ class WordPressAutoPoster:
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": response_mime,
-                "temperature": 0.75,
+                "temperature": 0.8, # 다양성 확보
                 "topP": 0.95
             }
         }
@@ -108,12 +110,13 @@ class WordPressAutoPoster:
         print("--- [Step 2] 고도화된 상태 유지형 순차 생성 시작 ---")
         news_context = "\n".join([f"- {n['title']}: {n['desc']}" for n in news_items])
         
-        # 1. 기획안 생성 (KeyError 방지를 위해 스키마와 인덱스 매칭 강화)
+        # 1. SEO 최적화 기획안 생성 (Yoast SEO 초점 키프레이즈 추출)
         plan_instruction = (
             f"당신은 대한민국 최고의 금융 칼럼니스트입니다. 현재 시점은 2026년 2월입니다.\n"
-            f"[최근 주제] {RECENT_TITLES}\n"
-            f"위 주제들과 겹치지 않는 독창적인 기획안을 JSON으로 만드세요.\n"
-            f"반드시 'focus_keyphrase'를 제목에 포함된 핵심 키워드로 선정하고, 각 섹션에는 뉴스 인덱스(required_news_index)를 할당하세요."
+            f"[최근 주제들] {RECENT_TITLES}\n"
+            f"위 주제들과 완전히 차별화된 새로운 뉴스 기반 기획안을 JSON으로 만드세요.\n"
+            f"반드시 'focus_keyphrase'를 제목과 첫 단락에 포함될 핵심 키워드(단어)로 선정하세요.\n"
+            f"섹션(sections)은 반드시 5개 이상이어야 하며, 각 섹션의 제목(heading)은 검색 의도를 반영해야 합니다."
         )
         plan_schema = {
             "type": "OBJECT",
@@ -143,36 +146,43 @@ class WordPressAutoPoster:
         plan = json.loads(plan_raw)
         print(f"기획 완료: {plan['title']} (SEO 키워드: {plan['focus_keyphrase']})")
 
-        # 2. 섹션별 순차 생성 (링크 자연 통합 및 반복 방지)
+        # 2. 섹션별 순차 생성 (본문 내 제목 강제 포함 로직)
         full_body = ""
+        used_content_summary = "" # 반복 방지를 위한 요약 메모리
+        
         for i, section in enumerate(plan['sections']):
             print(f"섹션 {i+1}/{len(plan['sections'])} 생성 중: {section['heading']}")
             
-            # KeyError 방지 로직: 뉴스 항목이 없거나 인덱스가 없을 경우 안전하게 대체
             idx = section.get('required_news_index', i)
-            target_news = news_items[idx % len(news_items)] if news_items else {"title": "국민연금 가이드", "desc": "안정적인 노후 준비"}
+            target_news = news_items[idx % len(news_items)] if news_items else {"title": "국민연금", "desc": "가이드"}
             
+            # 섹션별 프롬프트 고도화
             section_instruction = (
-                f"당신은 금융 전문가입니다. 이전 섹션의 내용을 절대 반복하지 마세요.\n"
-                f"이미 작성된 본문(이 내용은 다시 쓰지 마세요): {full_body[-1000:] if full_body else '없음'}\n\n"
-                f"현재 주제: {section['heading']}\n"
-                f"참고 뉴스: {target_news['title']}\n"
-                f"작성 지침: {section['instruction']}\n\n"
-                f"[엄격 규칙]\n"
-                f"1. 반드시 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 형식을 사용하세요.\n"
-                f"2. 외부 링크를 하단에 따로 빼지 말고, 문장 속에서 설명할 때 자연스럽게 <strong>볼드</strong>처리하여 삽입하세요.\n"
+                f"금융 전문가로서 블로그의 한 섹션을 작성합니다. '반복'은 절대 금물입니다.\n"
+                f"이미 작성된 핵심 요약(중복 금지): {used_content_summary}\n\n"
+                f"[작성 규정]\n"
+                f"1. 섹션 시작은 반드시 구텐베르크 제목 블록으로 시작하세요: <!-- wp:heading {{\"level\":2}} --><h2>{section['heading']}</h2><!-- /wp:heading -->\n"
+                f"2. 본문은 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 형식을 엄수하세요.\n"
+                f"3. SEO 최적화: 초점 키워드 '{plan['focus_keyphrase']}'를 자연스럽게 문장 속에 포함하세요.\n"
+                f"4. 링크 삽입: 문장 중간에 아래 링크를 <strong>볼드</strong>처리하여 삽입하세요.\n"
                 f"   - <strong><a href='https://www.nps.or.kr' target='_self'>국민연금공단 공식 홈페이지</a></strong>\n"
-                f"   - <strong><a href='https://minwon.nps.or.kr' target='_self'>내 곁에 국민연금(내 연금 조회)</a></strong>\n"
-                f"3. 임의의 외부 링크를 생성하지 마세요. 오직 위 두 가지만 사용하세요.\n"
-                f"4. 이미 설명한 논리나 문장을 반복하면 안 됩니다. 600자 이상 새로운 통찰력을 제공하세요."
+                f"5. 설명 방식: 단순히 뉴스를 나열하지 말고 전문적인 '분석'과 '전망'을 600자 이상 서술하세요."
             )
             
-            section_body = self.call_gemini(f"제목: {plan['title']}\n'{section['heading']}' 부분을 상세히 작성해줘.", section_instruction)
+            section_body = self.call_gemini(
+                f"전체 제목: {plan['title']}\n현재 섹션: {section['heading']}\n참고 뉴스: {target_news['title']}\n이전 섹션과 겹치지 않는 새로운 내용을 작성해줘.", 
+                section_instruction
+            )
+            
             if section_body:
+                # 중복 문장 필터링
                 clean_section = self.deduplicate_sentences(section_body)
                 full_body += "\n" + clean_section
+                
+                # 다음 섹션을 위해 현재 섹션의 핵심 요약 업데이트 (AI의 메모리 역할)
+                used_content_summary += f" [{section['heading']} 관련 설명 완료]"
 
-        # 3. 구텐베르크 문법 및 중복 검수
+        # 3. 구텐베르크 문법 정제 및 최종 중복 검수
         full_body = full_body.replace("//wp:", "<!-- /wp:").replace("/wp:", "<!-- /wp:")
         full_body = re.sub(r'(?<!<!-- )wp:paragraph', r'<!-- wp:paragraph', full_body)
         full_body = re.sub(r'wp:paragraph(?! -->)', r'wp:paragraph -->', full_body)
@@ -181,14 +191,14 @@ class WordPressAutoPoster:
         return plan
 
     def publish(self, data):
-        print("--- [Step 3] 워드프레스 발행 및 SEO 적용 ---")
+        print("--- [Step 3] 워드프레스 발행 및 Yoast SEO 적용 ---")
         payload = {
             "title": data['title'],
             "content": data['content'],
             "excerpt": data['excerpt'],
             "status": "publish",
             "meta": {
-                "_yoast_wpseo_focuskw": data.get('focus_keyphrase', '')
+                "_yoast_wpseo_focuskw": data.get('focus_keyphrase', '') # Yoast SEO 초점 키프레이즈
             }
         }
         res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=60)
@@ -197,14 +207,14 @@ class WordPressAutoPoster:
     def run(self):
         news = self.search_naver_news()
         if not news: 
-            print("뉴스 데이터 부족으로 종료")
+            print("뉴스 수집 실패")
             sys.exit(1)
             
         post_data = self.generate_content(news)
         if self.publish(post_data):
-            print(f"🎉 발행 성공: {post_data['title']}")
+            print(f"🎉 발행 성공: {post_data['title']} (SEO 키워드: {post_data.get('focus_keyphrase')})")
         else:
-            print("발행 실패")
+            print(f"발행 실패")
             sys.exit(1)
 
 if __name__ == "__main__":
