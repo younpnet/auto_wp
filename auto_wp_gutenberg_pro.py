@@ -76,16 +76,37 @@ class WordPressAutoPoster:
 
     def generate_content(self, topic_context):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
-        system_prompt = "금융 전문가로서 3,000자 이상의 워드프레스 블로그 포스팅을 JSON(title, content, excerpt, tags) 형식으로 작성하세요. 구텐베르크 블록 마커를 사용하세요."
+        
+        # JSON 파손 방지를 위한 강력한 가이드라인 추가
+        system_prompt = (
+            "당신은 금융 전문가입니다. 3,000자 이상의 워드프레스 블로그 포스팅을 JSON 형식으로 작성하세요.\n"
+            "필드명은 'title', 'content', 'excerpt', 'tags'를 사용하세요.\n"
+            "중요: 모든 텍스트 데이터 내의 큰따옴표(\")는 반드시 백슬래시(\\)를 사용하여 이스케이프(\\\") 처리하세요.\n"
+            "마크다운 코드 블록(```json)을 사용하지 말고 순수 JSON 데이터만 응답하세요."
+        )
+        
         payload = {
             "contents": [{"parts": [{"text": f"뉴스 참고: {topic_context}\n\n위 내용을 바탕으로 포스팅해줘."}]}],
             "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "generationConfig": {"responseMimeType": "application/json"}
+            "generationConfig": {
+                "responseMimeType": "application/json"
+            }
         }
+        
         try:
             res = requests.post(url, json=payload, timeout=120)
             if res.status_code == 200:
-                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
+                raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+                
+                # 가끔 포함될 수 있는 마크다운 코드 블록 기호 제거
+                clean_json_str = re.sub(r'```json|```', '', raw_text).strip()
+                
+                try:
+                    return json.loads(clean_json_str)
+                except json.JSONDecodeError as e:
+                    print(f"❌ JSON 파싱 오류: {e}")
+                    print(f"원본 텍스트 일부: {clean_json_str[:200]}...")
+                    sys.exit(1)
             else:
                 print(f"❌ Gemini 오류: {res.text}")
                 sys.exit(1)
