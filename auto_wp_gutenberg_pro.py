@@ -123,10 +123,13 @@ class WordPressAutoPoster:
         news_context = "\n".join([f"- {n['title']}: {n['desc']}" for n in news_items])
         
         system_instruction = (
-            f"당신은 대한민국 최고의 국민연금 전문 자산관리사입니다. 현재 시점은 2026년 2월입니다.\n"
+            f"당신은 대한민국 최고의 국민연금 전문 칼럼니스트입니다. 현재 시점은 2026년 2월입니다.\n"
             f"[최근 블로그에 발행된 실제 글 제목 30개]\n{self.recent_titles}\n\n"
+            f"[엄격 금지 사항]\n"
+            f"1. 인사말 및 자기소개 금지: 본문 시작 시 '안녕하십니까', '안녕하세요', '국민연금 전문 자산관리사입니다' 등의 인사나 신분 밝히기를 '절대' 하지 마세요.\n"
+            f"2. 즉시 본론 시작: 글의 첫 문장은 반드시 독자가 궁금해하는 정보나 핵심 주제 분석으로 바로 시작해야 합니다.\n\n"
             f"[롱테일 키워드 전략]\n"
-            f"1. 중복 절대 금지: 위 제공된 30개의 최근 제목과 내용이나 주제가 겹치지 않도록 아주 새로운 관점에서 작성하세요.\n"
+            f"1. 중복 절대 금지: 위 제공된 30개의 최근 제목과 주제가 겹치지 않도록 아주 새로운 관점에서 작성하세요.\n"
             f"2. 특정 대상 공략: 전업주부, 프리랜서, 이혼 가정, 고액 납부자 등이 검색할 법한 '구체적인 시나리오'를 주제로 선정하세요.\n"
             f"3. 제목 전략: 질문형이나 해결책 제시형 롱테일 키워드를 사용하세요.\n"
             f"4. SEO 최적화: Yoast SEO를 위해 'focus_keyphrase'를 3~4단어 조합의 롱테일 키워드로 설정하세요.\n\n"
@@ -159,7 +162,7 @@ class WordPressAutoPoster:
             "required": ["title", "focus_keyphrase", "blocks", "tags", "excerpt"]
         }
         
-        prompt = f"다음 뉴스 트렌드를 참고하되, 기존 30개 글과 중복되지 않는 롱테일 주제의 깊이 있는 글을 작성하세요:\n{news_context}"
+        prompt = f"다음 뉴스 트렌드를 참고하되, 인사말이나 자기소개 없이 바로 본론부터 시작하는 롱테일 주제의 깊이 있는 글을 작성하세요:\n{news_context}"
         data = self.call_gemini(prompt, system_instruction, schema)
         
         if not data: sys.exit(1)
@@ -168,6 +171,10 @@ class WordPressAutoPoster:
         seen_para = set()
         for b in data['blocks']:
             content = b['content'].strip()
+            # 인사말 패턴이 포함된 경우 코드 레벨에서 한 번 더 필터링 (안전장치)
+            if i == 0 and b['type'] == "p" and any(x in content for x in ["안녕", "안녕하십니까", "자산관리사", "전문가입니다"]):
+                continue
+
             fingerprint = re.sub(r'[^가-힣]', '', content)[:40]
             if b['type'] == "p" and (fingerprint in seen_para or len(fingerprint) < 5): continue
             seen_para.add(fingerprint)
