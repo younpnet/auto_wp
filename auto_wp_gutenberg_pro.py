@@ -126,18 +126,15 @@ class WordPressAutoPoster:
             f"당신은 대한민국 최고의 국민연금 전문 칼럼니스트입니다. 현재 시점은 2026년 2월입니다.\n"
             f"[최근 블로그에 발행된 실제 글 제목 30개]\n{self.recent_titles}\n\n"
             f"[엄격 금지 사항]\n"
-            f"1. 인사말 및 자기소개 금지: 본문 시작 시 '안녕하십니까', '안녕하세요', '국민연금 전문 자산관리사입니다' 등의 인사나 신분 밝히기를 '절대' 하지 마세요.\n"
-            f"2. 즉시 본론 시작: 글의 첫 문장은 반드시 독자가 궁금해하는 정보나 핵심 주제 분석으로 바로 시작해야 합니다.\n\n"
+            f"1. 인사말 및 자기소개 금지: '안녕하십니까', '안녕하세요', '자산관리사입니다' 등을 절대 쓰지 마세요. 바로 본론으로 시작하세요.\n"
+            f"2. 리스트 형식 엄수: 정보를 나열할 때는 반드시 'list' 타입을 사용하세요. 한 문장에 '첫째, 둘째'를 몰아넣지 말고, 반드시 각 항목을 줄바꿈(\\n)으로 구분하여 분리된 항목으로 만드세요.\n\n"
             f"[롱테일 키워드 전략]\n"
-            f"1. 중복 절대 금지: 위 제공된 30개의 최근 제목과 주제가 겹치지 않도록 아주 새로운 관점에서 작성하세요.\n"
-            f"2. 특정 대상 공략: 전업주부, 프리랜서, 이혼 가정, 고액 납부자 등이 검색할 법한 '구체적인 시나리오'를 주제로 선정하세요.\n"
-            f"3. 제목 전략: 질문형이나 해결책 제시형 롱테일 키워드를 사용하세요.\n"
-            f"4. SEO 최적화: Yoast SEO를 위해 'focus_keyphrase'를 3~4단어 조합의 롱테일 키워드로 설정하세요.\n\n"
+            f"1. 중복 절대 금지: 위 30개 글과 주제가 겹치지 않는 아주 새로운 시나리오를 선정하세요.\n"
+            f"2. SEO 최적화: 'focus_keyphrase'를 롱테일 키워드로 설정하고 제목 앞부분에 배치하세요.\n\n"
             f"[필수 작성 규정]\n"
             f"1. 문장 내 링크 삽입: 설명 중간에 자연스럽게 <a> 태그를 사용하여 링크를 삽입하세요.\n"
             f"   - <a href='https://www.nps.or.kr'>국민연금공단 공식 홈페이지</a>\n"
-            f"   - <a href='https://minwon.nps.or.kr'>내 곁에 국민연금</a>\n"
-            f"2. 블록 방식: AI는 절대로 구텐베르크 주석(<!-- wp... -->)을 생성하지 마세요. 오직 순수 텍스트와 HTML(a, strong)만 생성하세요."
+            f"2. 블록 방식: AI는 절대로 구텐베르크 주석을 생성하지 마세요. 오직 순수 데이터만 생성하세요."
         )
 
         schema = {
@@ -162,17 +159,18 @@ class WordPressAutoPoster:
             "required": ["title", "focus_keyphrase", "blocks", "tags", "excerpt"]
         }
         
-        prompt = f"다음 뉴스 트렌드를 참고하되, 인사말이나 자기소개 없이 바로 본론부터 시작하는 롱테일 주제의 깊이 있는 글을 작성하세요:\n{news_context}"
+        prompt = f"다음 뉴스 데이터를 분석하여 깊이 있는 분석글을 작성하세요. 나열형 정보는 반드시 리스트 형식을 사용하고 항목별로 줄바꿈을 하세요:\n{news_context}"
         data = self.call_gemini(prompt, system_instruction, schema)
         
         if not data: sys.exit(1)
         
         assembled = ""
         seen_para = set()
-        # i 변수가 루프 인덱스로 사용되도록 enumerate를 적용하여 NameError 수정
+        
         for i, b in enumerate(data['blocks']):
             content = b['content'].strip()
-            # 인사말 패턴이 포함된 경우 코드 레벨에서 한 번 더 필터링 (안전장치)
+            
+            # 인사말 패턴 필터링
             if i == 0 and b['type'] == "p" and any(x in content for x in ["안녕", "안녕하십니까", "자산관리사", "전문가입니다"]):
                 continue
 
@@ -187,10 +185,17 @@ class WordPressAutoPoster:
             elif b['type'] == "p":
                 assembled += f"<!-- wp:paragraph -->\n<p>{content}</p>\n<!-- /wp:paragraph -->\n\n"
             elif b['type'] == "list":
-                if "<li>" not in content:
-                    lis = "".join([f"<li>{i.strip()}</li>" for i in content.split('\n') if i.strip()])
-                    content = f"<ul>{lis}</ul>"
-                assembled += f"<!-- wp:list -->\n{content}\n<!-- /wp:list -->\n\n"
+                # [고도화 로직] '첫째, 둘째...'가 줄바꿈 없이 붙어 있을 경우 강제로 분리
+                content = re.sub(r'([둘셋넷다섯]째|마지막으로),', r'\n\1,', content)
+                
+                # 줄바꿈 기준으로 항목 분리
+                items = [item.strip() for item in content.split('\n') if item.strip()]
+                
+                # HTML 리스트 태그로 조립
+                lis = "".join([f"<li>{item}</li>" for item in items])
+                formatted_list = f"<ul>{lis}</ul>"
+                
+                assembled += f"<!-- wp:list -->\n{formatted_list}\n<!-- /wp:list -->\n\n"
 
         data['assembled_content'] = assembled
         return data
