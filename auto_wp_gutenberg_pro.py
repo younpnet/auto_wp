@@ -51,7 +51,7 @@ class WordPressAutoPoster:
         """
         테스트 시 로딩이 길어지는 주범입니다. 
         실제 운영 시에는 (0, 3600)으로 설정하여 1시간 범위를 주시고,
-        지금은 테스트를 위해 (1, 10)초로 대폭 줄였습니다.
+        지금은 테스트를 위해 (1, 10)초로 대폭 줄렸습니다.
         """
         wait_seconds = random.randint(1, 10) 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🛡️ 보안 및 랜덤화를 위한 대기: {wait_seconds}초 후 작업을 시작합니다...")
@@ -75,22 +75,36 @@ class WordPressAutoPoster:
             print(f"⚠️ 뉴스 검색 실패 (기본 지식으로 진행): {e}")
         return "국민연금 최신 제도 변화 분석"
 
-    def get_or_create_tag_ids(self, tags_string):
-        if not tags_string: return []
-        tag_names = [t.strip() for t in tags_string.split(',')][:10]
+    def get_or_create_tag_ids(self, tags_input):
+        """태그 데이터가 문자열(String)이든 리스트(List)이든 안전하게 처리합니다."""
+        if not tags_input: return []
+        
+        # AI가 리스트 형식을 반환할 경우와 문자열 형식을 반환할 경우 모두 대응
+        if isinstance(tags_input, list):
+            tag_names = [str(t).strip() for t in tags_input][:10]
+        else:
+            tag_names = [t.strip() for t in str(tags_input).split(',')][:10]
+            
         tag_ids = []
         print(f"태그 {len(tag_names)}개 처리 중...")
         for name in tag_names:
             try:
+                # 검색 API 호출 시 특수문자 인코딩 처리
                 search_res = self.session.get(f"{self.base_url}/wp-json/wp/v2/tags?search={name}", headers=self.common_headers)
                 existing = search_res.json()
+                
+                # 검색 결과 중 정확히 일치하는 이름이 있는지 확인
                 match = next((t for t in existing if t['name'].lower() == name.lower()), None)
                 if match:
                     tag_ids.append(match['id'])
                 else:
+                    # 일치하는 태그가 없으면 새로 생성
                     create_res = self.session.post(f"{self.base_url}/wp-json/wp/v2/tags", headers=self.common_headers, json={"name": name})
-                    if create_res.status_code == 201: tag_ids.append(create_res.json()['id'])
-            except: continue
+                    if create_res.status_code == 201:
+                        tag_ids.append(create_res.json()['id'])
+            except Exception as e:
+                print(f"⚠️ 태그 '{name}' 처리 실패: {e}")
+                continue
         return tag_ids
 
     def generate_content(self, topic_context):
@@ -163,7 +177,9 @@ class WordPressAutoPoster:
 
     def publish(self, data, media_id):
         print("--- [Step 5] 워드프레스 최종 발행 중... ---")
-        tag_ids = self.get_or_create_tag_ids(data.get('tags', ''))
+        # tags 데이터 형식에 관계없이 안전하게 처리되도록 get_or_create_tag_ids를 호출합니다.
+        tag_ids = self.get_or_create_tag_ids(data.get('tags', []))
+        
         payload = {
             "title": data['title'],
             "content": data['content'],
