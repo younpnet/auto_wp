@@ -19,20 +19,21 @@ CONFIG = {
     "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
     "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", ""),
     "TEXT_MODEL": "gemini-2.5-flash-preview-09-2025",
-    "IMAGE_MODEL": "imagen-4.0-generate-001" # 이미지 생성 모델
+    "IMAGE_MODEL": "imagen-4.0-generate-001" 
 }
 
 class WordPressAutoPoster:
     def __init__(self):
-        print("--- 시스템 환경 점검 ---")
+        print("--- [Step 0] 시스템 환경 및 인증 점검 ---")
         for key in ["WP_URL", "WP_APP_PASSWORD", "GEMINI_API_KEY"]:
             val = CONFIG[key]
             if not val:
-                print(f"❌ 오류: '{key}' 환경 변수가 누락되었습니다.")
+                print(f"❌ 오류: '{key}' 환경 변수가 설정되지 않았습니다.")
             else:
-                print(f"✅ '{key}' 로드 완료")
+                print(f"✅ '{key}' 로드 완료 (데이터 확인됨)")
 
         if not CONFIG["WP_URL"] or not CONFIG["WP_APP_PASSWORD"] or not CONFIG["GEMINI_API_KEY"]:
+            print("❗ 필수 설정 누락으로 실행을 종료합니다.")
             sys.exit(1)
             
         self.base_url = CONFIG["WP_URL"].rstrip("/")
@@ -47,12 +48,17 @@ class WordPressAutoPoster:
         }
 
     def random_sleep(self):
-        """오전 7시~8시 사이 랜덤 발행"""
-        wait_seconds = random.randint(0, 3600) 
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 예약 대기: {wait_seconds // 60}분 후 시작...")
+        """
+        테스트 시 로딩이 길어지는 주범입니다. 
+        실제 운영 시에는 (0, 3600)으로 설정하여 1시간 범위를 주시고,
+        지금은 테스트를 위해 (1, 10)초로 대폭 줄였습니다.
+        """
+        wait_seconds = random.randint(1, 10) 
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🛡️ 보안 및 랜덤화를 위한 대기: {wait_seconds}초 후 작업을 시작합니다...")
         time.sleep(wait_seconds)
 
     def search_naver_news(self, query="국민연금 개혁"):
+        print("--- [Step 1] 네이버 뉴스 실시간 검색 중... ---")
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"],
@@ -63,14 +69,17 @@ class WordPressAutoPoster:
             res = self.session.get(url, headers=headers, params=params, timeout=15)
             if res.status_code == 200:
                 items = res.json().get('items', [])
+                print(f"뉴스 {len(items)}건 수집 완료")
                 return "\n".join([f"제목: {re.sub('<.*?>', '', i['title'])}\n내용: {re.sub('<.*?>', '', i['description'])}" for i in items])
-        except: pass
+        except Exception as e: 
+            print(f"⚠️ 뉴스 검색 실패 (기본 지식으로 진행): {e}")
         return "국민연금 최신 제도 변화 분석"
 
     def get_or_create_tag_ids(self, tags_string):
         if not tags_string: return []
         tag_names = [t.strip() for t in tags_string.split(',')][:10]
         tag_ids = []
+        print(f"태그 {len(tag_names)}개 처리 중...")
         for name in tag_names:
             try:
                 search_res = self.session.get(f"{self.base_url}/wp-json/wp/v2/tags?search={name}", headers=self.common_headers)
@@ -85,7 +94,7 @@ class WordPressAutoPoster:
         return tag_ids
 
     def generate_content(self, topic_context):
-        """텍스트 콘텐츠 생성 (구텐베르크 블록 방식)"""
+        print("--- [Step 2] Gemini AI 본문 및 태그 생성 중... ---")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         system_prompt = (
             "당신은 대한민국 최고의 금융 전문가입니다. 3,000자 이상의 상세 포스팅을 JSON(title, content, excerpt, tags)으로 작성하세요.\n"
@@ -98,14 +107,19 @@ class WordPressAutoPoster:
             "generationConfig": {"responseMimeType": "application/json"}
         }
         res = self.session.post(url, json=payload, timeout=120)
+        if res.status_code != 200:
+            print(f"❌ 텍스트 생성 실패: {res.text}")
+            sys.exit(1)
+            
         raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-        return json.loads(re.sub(r'```json|```', '', raw_text).strip())
+        data = json.loads(re.sub(r'```json|```', '', raw_text).strip())
+        print(f"글 생성 완료: {data['title'][:20]}...")
+        return data
 
     def generate_image(self, title):
-        """Imagen 4.0 모델을 사용하여 1366x745 (16:9) 이미지 생성"""
+        print("--- [Step 3] Imagen 4.0 대표 이미지 생성 중... ---")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
-        # SEO 및 가독성을 고려한 이미지 프롬프트 생성
         prompt = (
             f"A professional, high-quality 16:9 aspect ratio (1366x745) blog featured image for an article titled '{title}'. "
             "The design should be modern and financial-themed, representing 'National Pension Service of Korea'. "
@@ -118,15 +132,18 @@ class WordPressAutoPoster:
         }
         
         try:
-            res = self.session.post(url, json=payload, timeout=60)
+            res = self.session.post(url, json=payload, timeout=90)
             if res.status_code == 200:
+                print("이미지 생성 성공")
                 return res.json()['predictions'][0]['bytesBase64Encoded']
+            else:
+                print(f"⚠️ 이미지 생성 API 오류: {res.status_code}")
         except Exception as e:
-            print(f"⚠️ 이미지 생성 중 오류: {e}")
+            print(f"⚠️ 이미지 생성 중 예외 발생: {e}")
         return None
 
     def upload_media(self, base64_image, filename):
-        """이미지를 워드프레스 미디어 라이브러리에 업로드"""
+        print("--- [Step 4] 워드프레스 미디어 업로드 중... ---")
         url = f"{self.base_url}/wp-json/wp/v2/media"
         image_data = base64.b64decode(base64_image)
         
@@ -136,13 +153,16 @@ class WordPressAutoPoster:
             "Content-Type": "image/png"
         }
         
-        res = self.session.post(url, headers=headers, data=image_data, timeout=30)
+        res = self.session.post(url, headers=headers, data=image_data, timeout=60)
         if res.status_code == 201:
-            return res.json().get('id')
-        print(f"⚠️ 미디어 업로드 실패: {res.text[:200]}")
+            media_id = res.json().get('id')
+            print(f"미디어 업로드 성공 (ID: {media_id})")
+            return media_id
+        print(f"⚠️ 미디어 업로드 실패: {res.status_code}")
         return None
 
     def publish(self, data, media_id):
+        print("--- [Step 5] 워드프레스 최종 발행 중... ---")
         tag_ids = self.get_or_create_tag_ids(data.get('tags', ''))
         payload = {
             "title": data['title'],
@@ -152,29 +172,34 @@ class WordPressAutoPoster:
             "tags": tag_ids,
             "featured_media": media_id if media_id else 0
         }
-        res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=30)
-        return res.status_code == 201
+        res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=60)
+        
+        if res.status_code == 201:
+            return True
+        else:
+            print(f"❌ 발행 실패 (코드 {res.status_code}): {res.text[:500]}")
+            return False
 
     def run(self):
-        # 1. 랜덤 대기
+        # 1. 랜덤 대기 (테스트를 위해 짧게 수정됨)
         self.random_sleep()
         
         # 2. 정보 수집 및 텍스트 생성
-        print("1. 콘텐츠 생성 중...")
         news = self.search_naver_news()
         post_data = self.generate_content(news)
         
         # 3. 이미지 생성 및 업로드
-        print("2. 대표 이미지 생성 및 업로드 중...")
         media_id = None
         img_b64 = self.generate_image(post_data['title'])
         if img_b64:
             media_id = self.upload_media(img_b64, f"nps_featured_{int(time.time())}.png")
         
         # 4. 발행
-        print(f"3. 워드프레스 발행 중: {post_data['title']}")
         if self.publish(post_data, media_id):
-            print("🎉 포스팅 발행 성공 (대표이미지 및 태그 포함)!")
+            print("\n" + "="*50)
+            print(f"🎉 포스팅 발행 성공!")
+            print(f"제목: {post_data['title']}")
+            print("="*50)
         else:
             sys.exit(1)
 
