@@ -90,25 +90,53 @@ class WordPressAutoPoster:
         text = text.replace("<!-- <!--", "<!--").replace("--> -->", "-->")
         return text
 
-    def check_and_fix_repetition(self, content):
-        """문장 단위 중복을 검사하고 동일한 문장이 반복될 경우 제거하거나 경고합니다."""
-        # HTML 태그 제거 후 순수 텍스트 추출 (중복 검사용)
+    def deduplicate_content(self, content):
+        """문단 단위로 분리하여 중복된 문단을 물리적으로 제거합니다."""
+        # 구텐베르크 블록 단위로 쪼개기
+        blocks = re.split(r'(<!-- wp:.*? -->)', content)
+        
+        seen_text = set()
+        new_blocks = []
+        
+        for i in range(len(blocks)):
+            block = blocks[i]
+            # 주석이 아닌 실제 텍스트 내용 추출 (공백 및 태그 제거)
+            clean_text = re.sub(r'<[^>]+>', '', block).strip()
+            clean_text = re.sub(r'<!--.*?-->', '', clean_text).strip()
+            
+            if not clean_text or len(clean_text) < 20: # 짧은 문구나 마커는 통과
+                new_blocks.append(block)
+                continue
+            
+            # 텍스트의 앞 30자만 비교하여 중복 여부 판단 (유사 문장 방지)
+            fingerprint = clean_text[:40]
+            if fingerprint not in seen_text:
+                seen_text.add(fingerprint)
+                new_blocks.append(block)
+            else:
+                print(f"🗑️ 중복 단락 제거됨: {clean_text[:30]}...")
+                # 만약 이전 블록이 마커였다면 그것도 같이 제거하기 위해 pop 시도
+                if len(new_blocks) > 0 and "<!-- wp:" in new_blocks[-1]:
+                    new_blocks.pop()
+        
+        return "".join(new_blocks)
+
+    def is_content_repetitive(self, content):
+        """본문에 동일한 문장이 과도하게 반복되는지 최종 검증합니다."""
         plain_text = re.sub(r'<[^>]+>', '', content)
-        # 구텐베르크 주석 마커 제거
         plain_text = re.sub(r'<!--.*?-->', '', plain_text)
-        
-        # 문장 단위로 분리
         sentences = re.split(r'\.|\?|\!', plain_text)
-        sentences = [s.strip() for s in sentences if len(s.strip()) > 10] # 짧은 문장 제외
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
         
+        if not sentences: return False
+        
+        duplicate_count = 0
         for s in set(sentences):
-            count = sentences.count(s)
-            if count > 3: # 동일 문장이 3회 이상 발견되면 심각한 반복으로 간주
-                print(f"⚠️ 중복 문장 발견 ({count}회): {s[:30]}...")
-                # 본문에서 해당 문장이 포함된 단락 중 중복되는 것들을 제거하는 대신 
-                # AI에게 다시 생성하게 하거나 여기서 에러를 내는 것이 안전함
-        
-        return content
+            if sentences.count(s) > 2:
+                duplicate_count += 1
+                
+        # 중복 문장 종류가 3개 이상이면 품질 부적합 판정
+        return duplicate_count >= 3
 
     def clean_meta_text(self, text):
         """불필요한 글자 수 안내나 전문가 서명을 제거합니다."""
@@ -125,7 +153,7 @@ class WordPressAutoPoster:
         return text.strip()
 
     def generate_content(self, topic_context):
-        print("--- [Step 2] Gemini AI SEO 최적화 콘텐츠 생성 중... ---")
+        print("--- [Step 2] Gemini AI 전략적 콘텐츠 생성 중... ---")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         
         strategy = random.choice(["NEWS_ANALYSIS", "INFORMATIONAL_GUIDE"])
@@ -135,7 +163,11 @@ class WordPressAutoPoster:
             f"[최근 발행된 주제 리스트]\n{RECENT_TITLES}\n\n"
             f"[엄격 지침 - 반복 금지 프로토콜]\n"
             f"1. 중복 생성 금지: 글자 수를 채우기 위해 동일한 내용, 문장, 혹은 단락을 반복적으로 작성하는 행위를 '절대' 금지합니다.\n"
-            f"2. 내용의 깊이: 3,000자 이상을 달성하기 위해 정보를 반복하지 말고, 제도적 배경, 해외 사례, 구체적 예시, Q&A 등 '새로운 정보'로 분량을 확보하세요.\n"
+            f"2. 내용 확장 전략: 3,000자 이상의 분량을 확보할 때 정보를 반복하지 말고 다음 섹션을 추가하세요.\n"
+            f"   - 관련 법령의 구체적 근거\n"
+            f"   - 실제 수혜자 시뮬레이션 사례 (Case Study)\n"
+            f"   - 해외 연금 제도와의 비교 분석\n"
+            f"   - 자주 묻는 질문(Q&A) 5가지 이상\n"
             f"3. SEO 제목: 선정된 '초점 키프레이즈'가 제목의 앞부분에 반드시 포함되도록 구성하세요.\n"
             f"4. 구텐베르크 마커: 반드시 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 형식을 사용하세요.\n"
             f"5. 링크: 아래 링크를 반드시 포함하고 <strong> 태그로 감싸 볼드 처리하세요.\n"
@@ -148,39 +180,41 @@ class WordPressAutoPoster:
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.8 # 온도를 약간 높여 기계적인 반복 패턴을 줄임
+                "temperature": 0.9 # 다양성을 높여 패턴 반복 방지
             }
         }
         
-        for i in range(5):
+        # 반복 검출 시 최대 2회까지 재생성 시도
+        for attempt in range(3):
             try:
                 res = self.session.post(url, json=payload, timeout=120)
                 if res.status_code == 200:
                     raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
                     data = json.loads(re.sub(r'```json|```', '', raw_text).strip())
                     
-                    # 데이터 정제
                     data['content'] = self.clean_meta_text(data['content'])
                     data['content'] = self.fix_gutenberg_content(data['content'])
                     
-                    # 반복 검사 및 보정
-                    data['content'] = self.check_and_fix_repetition(data['content'])
+                    # 1. 물리적 중복 단락 제거
+                    data['content'] = self.deduplicate_content(data['content'])
+                    
+                    # 2. 품질 검사 (반복률 확인)
+                    if self.is_content_repetitive(data['content']):
+                        print(f"⚠️ 품질 부적합(반복 감지). 재생성을 시도합니다. (시도 {attempt+1}/3)")
+                        continue
                     
                     print(f"키워드 추출 완료: {data.get('focus_keyphrase', '없음')}")
                     return data
                 else:
-                    print(f"API 오류 (시도 {i+1}): {res.text}")
+                    print(f"API 오류: {res.text}")
             except Exception as e:
-                print(f"에러 (시도 {i+1}): {e}")
-            time.sleep(2 ** i)
+                print(f"에러 발생: {e}")
+            time.sleep(5)
+            
         sys.exit(1)
 
     def publish(self, data):
-        print("--- [Step 3] 워드프레스 발행 및 Yoast SEO 연동 중... ---")
-        
-        # 태그 처리
-        tag_names = [t.strip() for t in (data['tags'] if isinstance(data['tags'], list) else data['tags'].split(','))][:10]
-        
+        print("--- [Step 3] 워드프레스 발행 중... ---")
         payload = {
             "title": data['title'],
             "content": data['content'],
@@ -192,12 +226,7 @@ class WordPressAutoPoster:
         }
         
         res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=60)
-        
-        if res.status_code == 201:
-            return True
-        else:
-            print(f"❌ 발행 실패 (코드 {res.status_code}): {res.text}")
-            return False
+        return res.status_code == 201
 
     def run(self):
         self.random_sleep()
