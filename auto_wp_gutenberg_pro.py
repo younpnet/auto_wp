@@ -111,7 +111,7 @@ class WordPressAutoPoster:
         
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": response_mime,
                 "temperature": 0.85, # 다양성을 위해 온도 소폭 상승
@@ -123,11 +123,13 @@ class WordPressAutoPoster:
 
         for i in range(3):
             try:
-                res = self.session.post(url, json=payload, timeout=120)
-                if res.status_code == 200:
-                    return res.json()['candidates'][0]['content']['parts'][0]['text']
-            except:
-                pass
+                response = self.session.post(url, json=payload, timeout=120)
+                if response.status_code == 200:
+                    return response.json()['candidates'][0]['content']['parts'][0]['text']
+                else:
+                    print(f"Gemini API 오류: {response.status_code} - {response.text}")
+            except Exception as e:
+                print(f"Gemini API 호출 중 예외 발생: {e}")
             time.sleep(2 ** i)
         return None
 
