@@ -69,13 +69,9 @@ class WordPressAutoPoster:
         return []
 
     def get_or_create_tag_ids(self, tags_input):
-        """태그를 확인하고 없으면 생성하여 ID 리스트를 반환합니다."""
+        """태그 이름을 ID로 동기화합니다."""
         if not tags_input: return []
-        if isinstance(tags_input, list):
-            tag_names = [str(t).strip() for t in tags_input][:8]
-        else:
-            tag_names = [t.strip() for t in str(tags_input).split(',')][:8]
-            
+        tag_names = [t.strip() for t in (tags_input if isinstance(tags_input, list) else str(tags_input).split(','))][:10]
         tag_ids = []
         for name in tag_names:
             try:
@@ -102,32 +98,30 @@ class WordPressAutoPoster:
                 "responseSchema": schema
             }
         }
-        
         for i in range(3):
             try:
                 res = self.session.post(url, json=payload, timeout=120)
                 if res.status_code == 200:
                     return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
             except: pass
-            time.sleep(2 ** i)
+            time.sleep(5)
         return None
 
     def generate_content(self, news_items):
-        print("--- [Step 2] 구조적 콘텐츠 생성 시작 (Gutenberg Integrity) ---")
+        print("--- [Step 2] 구조적 데이터 생성 및 블록 조립 ---")
         news_context = "\n".join([f"- {n['title']}: {n['desc']}" for n in news_items])
         
-        # AI에게는 데이터만 생성하게 하고, 블록 래핑은 파이썬이 수행합니다.
         system_instruction = (
-            f"당신은 대한민국 최고의 국민연금 금융 전문가입니다. 현재 시점은 2026년 2월입니다.\n"
-            f"[최근 주제들] {RECENT_TITLES}\n"
-            f"위 주제들과 완전히 차별화된 새로운 뉴스 기반 포스팅을 작성하세요.\n\n"
-            f"[엄격 규칙]\n"
-            f"1. 중복 금지: 앞에서 한 말을 다른 문단에서 절대 반복하지 마세요.\n"
-            f"2. SEO 최적화: focus_keyphrase를 제목과 첫 단락에 반드시 포함하세요.\n"
-            f"3. 링크 자연 통합: 문장 내에 '국민연금공단 공식 홈페이지' 등 키워드에 맞춰 링크를 삽입하세요.\n"
-            f"   - https://www.nps.or.kr (국민연금공단 공식 홈페이지)\n"
-            f"   - https://minwon.nps.or.kr (내 곁에 국민연금)\n"
-            f"4. 서명 금지: 인사말, 전문가 이름, 글자 수 안내 등을 절대 포함하지 마세요."
+            f"당신은 대한민국 최고의 금융 전문가입니다. 현재 시점은 2026년 2월입니다.\n"
+            f"[기존 발행 리스트] {RECENT_TITLES}\n"
+            f"위 주제들과 완전히 차별화된 새로운 포스팅을 작성하세요.\n\n"
+            f"[필수 작성 규정]\n"
+            f"1. 반복 절대 금지: 동일한 문장이나 유사한 논리를 여러 번 쓰지 마세요. 각 블록은 독창적이어야 합니다.\n"
+            f"2. 문장 내 링크 삽입: 설명 중간에 자연스럽게 <a> 태그를 사용하여 링크를 삽입하세요.\n"
+            f"   - <a href='https://www.nps.or.kr'>국민연금공단 공식 홈페이지</a>\n"
+            f"   - <a href='https://minwon.nps.or.kr'>내 곁에 국민연금</a>\n"
+            f"3. SEO 최적화: focus_keyphrase 필드에 제목과 본문을 관통하는 핵심 키워드 1개를 단어 단위로 입력하세요.\n"
+            f"4. 블록 방식: AI는 절대로 구텐베르크 주석(<!-- wp... -->)을 생성하지 마세요. 오직 순수 텍스트와 HTML(a, strong)만 생성하세요."
         )
 
         schema = {
@@ -142,51 +136,48 @@ class WordPressAutoPoster:
                     "items": {
                         "type": "OBJECT",
                         "properties": {
-                            "type": {"type": "string", "enum": ["h2", "h3", "p", "list", "table"]},
+                            "type": {"type": "string", "enum": ["h2", "h3", "p", "list"]},
                             "content": {"type": "string"}
-                        }
+                        },
+                        "required": ["type", "content"]
                     }
                 }
             },
             "required": ["title", "focus_keyphrase", "blocks", "tags", "excerpt"]
         }
         
-        prompt = f"다음 뉴스 데이터를 분석하여 깊이 있는 분석 글을 작성해줘:\n{news_context}"
-        raw_data = self.call_gemini(prompt, system_instruction, schema)
+        prompt = f"다음 뉴스를 분석하여 3,000자 이상의 깊이 있는 글을 작성하세요:\n{news_context}"
+        data = self.call_gemini(prompt, system_instruction, schema)
         
-        if not raw_data: sys.exit(1)
+        if not data: sys.exit(1)
         
-        # 파이썬 레벨에서 구텐베르크 블록으로 조립 (깨짐 방지)
-        assembled_content = ""
-        seen_paragraphs = set()
-        
-        for block in raw_data['blocks']:
-            b_type = block['type']
-            b_content = block['content'].strip()
-            
-            # 문단 중복 검사 (내용의 지문 생성)
-            fingerprint = re.sub(r'[^가-힣]', '', b_content)
-            if b_type == "p" and (fingerprint in seen_paragraphs or len(fingerprint) < 10):
-                continue
-            seen_paragraphs.add(fingerprint)
+        # 파이썬 레벨에서 정교한 블록 조립 (깨짐 현상 원천 차단)
+        assembled = ""
+        seen_para = set()
+        for b in data['blocks']:
+            content = b['content'].strip()
+            # 물리적 중복 제거 로직
+            fingerprint = re.sub(r'[^가-힣]', '', content)[:40]
+            if b['type'] == "p" and (fingerprint in seen_para or len(fingerprint) < 5): continue
+            seen_para.add(fingerprint)
 
-            if b_type == "h2":
-                assembled_content += f"<!-- wp:heading {{\"level\":2}} -->\n<h2>{b_content}</h2>\n<!-- /wp:heading -->\n\n"
-            elif b_type == "h3":
-                # f-string 내 중괄호 이스케이프 수정: { -> {{, } -> }}
-                assembled_content += f"<!-- wp:heading {{\"level\":3}} -->\n<h3>{b_content}</h3>\n<!-- /wp:heading -->\n\n"
-            elif b_type == "p":
-                assembled_content += f"<!-- wp:paragraph -->\n<p>{b_content}</p>\n<!-- /wp:paragraph -->\n\n"
-            elif b_type == "list":
-                assembled_content += f"<!-- wp:list -->\n{b_content}\n<!-- /wp:list -->\n\n"
-            elif b_type == "table":
-                assembled_content += f"<!-- wp:table -->\n<figure class=\"wp-block-table\">{b_content}</figure>\n<!-- /wp:table -->\n\n"
+            if b['type'] == "h2":
+                assembled += f"<!-- wp:heading {{\"level\":2}} -->\n<h2>{content}</h2>\n<!-- /wp:heading -->\n\n"
+            elif b['type'] == "h3":
+                assembled += f"<!-- wp:heading {{\"level\":3}} -->\n<h3>{content}</h3>\n<!-- /wp:heading -->\n\n"
+            elif b['type'] == "p":
+                assembled += f"<!-- wp:paragraph -->\n<p>{content}</p>\n<!-- /wp:paragraph -->\n\n"
+            elif b['type'] == "list":
+                if "<li>" not in content:
+                    lis = "".join([f"<li>{i.strip()}</li>" for i in content.split('\n') if i.strip()])
+                    content = f"<ul>{lis}</ul>"
+                assembled += f"<!-- wp:list -->\n{content}\n<!-- /wp:list -->\n\n"
 
-        raw_data['assembled_content'] = assembled_content
-        return raw_data
+        data['assembled_content'] = assembled
+        return data
 
     def publish(self, data):
-        print("--- [Step 3] 워드프레스 발행 및 SEO 데이터 전송 ---")
+        print("--- [Step 3] 워드프레스 발행 및 Yoast SEO 연동 ---")
         tag_ids = self.get_or_create_tag_ids(data.get('tags', ''))
         
         payload = {
@@ -196,27 +187,20 @@ class WordPressAutoPoster:
             "status": "publish",
             "tags": tag_ids,
             "meta": {
-                "_yoast_wpseo_focuskw": data.get('focus_keyphrase', '')
+                "_yoast_wpseo_focuskw": data.get('focus_keyphrase', '') # Yoast SEO 필드
             }
         }
         
         res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=60)
-        
-        if res.status_code == 201:
-            return True
-        else:
-            print(f"❌ 발행 실패 (코드 {res.status_code}): {res.text[:500]}")
-            return False
+        return res.status_code == 201
 
     def run(self):
         news = self.search_naver_news()
-        if not news: 
-            print("뉴스 데이터 수집 실패")
-            sys.exit(1)
-            
+        if not news: sys.exit(1)
         post_data = self.generate_content(news)
         if self.publish(post_data):
-            print(f"🎉 발행 성공: {post_data['title']} (SEO 키워드: {post_data.get('focus_keyphrase')})")
+            print(f"🎉 발행 성공: {post_data['title']}")
+            print(f"✅ Yoast SEO 키워드: {post_data.get('focus_keyphrase')}")
         else:
             sys.exit(1)
 
