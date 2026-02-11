@@ -40,26 +40,23 @@ class WordPressAutoPoster:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         }
         
-        # 최신 글 제목 30개 동적 로드
+        # 최신 글 제목 30개 동적 로드 (주제 중복 방지)
         self.recent_titles = self.fetch_recent_post_titles(30)
 
     def fetch_recent_post_titles(self, count=30):
-        """워드프레스에서 최신 포스트 제목들을 가져와 중복을 방지합니다."""
+        """워드프레스에서 최근 글 제목을 가져와 중복을 피합니다."""
         print(f"--- [Step 0.1] 블로그 최신글 {count}개 분석 중... ---")
         url = f"{self.base_url}/wp-json/wp/v2/posts"
         params = {"per_page": count, "status": "publish", "_fields": "title"}
         try:
             res = self.session.get(url, headers=self.common_headers, params=params, timeout=20)
             if res.status_code == 200:
-                titles = [re.sub('<.*?>', '', post['title']['rendered']) for post in res.json()]
-                print(f"✅ 기존 포스팅 {len(titles)}개 확인 완료.")
-                return titles
-        except Exception as e:
-            print(f"⚠️ 제목 로드 실패: {e}")
+                return [re.sub('<.*?>', '', post['title']['rendered']) for post in res.json()]
+        except: pass
         return []
 
-    def search_naver_news(self, query="국민연금 개혁 수령액"):
-        """키워드 소스로 활용할 뉴스 데이터를 가져옵니다."""
+    def search_naver_news(self, query="국민연금 개혁"):
+        """실시간 뉴스는 참고 자료(Context)로만 활용합니다."""
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"],
@@ -74,24 +71,6 @@ class WordPressAutoPoster:
         except: return []
         return []
 
-    def get_or_create_tag_ids(self, tags_input):
-        """태그명을 ID로 변환합니다."""
-        if not tags_input: return []
-        tag_names = [t.strip() for t in (tags_input if isinstance(tags_input, list) else str(tags_input).split(','))][:10]
-        tag_ids = []
-        for name in tag_names:
-            try:
-                search_res = self.session.get(f"{self.base_url}/wp-json/wp/v2/tags?search={name}", headers=self.common_headers)
-                existing = search_res.json()
-                match = next((t for t in existing if t['name'].lower() == name.lower()), None)
-                if match:
-                    tag_ids.append(match['id'])
-                else:
-                    create_res = self.session.post(f"{self.base_url}/wp-json/wp/v2/tags", headers=self.common_headers, json={"name": name})
-                    if create_res.status_code == 201: tag_ids.append(create_res.json()['id'])
-            except: continue
-        return tag_ids
-
     def call_gemini(self, prompt, system_instruction, schema=None):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         payload = {
@@ -105,7 +84,7 @@ class WordPressAutoPoster:
         }
         for i in range(3):
             try:
-                res = self.session.post(url, json=payload, timeout=150)
+                res = self.session.post(url, json=payload, timeout=180)
                 if res.status_code == 200:
                     return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
             except: pass
@@ -117,18 +96,20 @@ class WordPressAutoPoster:
         news_context = "\n".join([f"- {n['title']}: {n['desc']}" for n in news_items])
         
         system_instruction = (
-            f"당신은 대한민국 최고의 국민연금 전문 자산관리사이자 검색 엔진 최적화(SEO) 전문가입니다.\n"
-            f"[기존 발행글] {self.recent_titles}\n\n"
-            f"[콘텐츠 전략: 롱테일 & 고검색량]\n"
-            f"1. 단순 뉴스 요약은 피하세요. 대신 뉴스를 바탕으로 독자들이 가장 많이 검색하는 '실전 가이드'를 작성하세요.\n"
-            f"   (예: 추납 시 건보료 영향, 전업주부 임의가입 수익률 분석, 노령연금과 기초연금 중복 수령 시 감액 회피법 등)\n"
-            f"2. 특정 페르소나(부부 가입자, 프리랜서, 조기 은퇴자 등)를 타겟팅한 롱테일 키워드를 선정하세요.\n"
-            f"3. 제목 전략: '어떻게 하면 ~할까?', '~하는 법 총정리', '모르면 손해보는 ~' 등 클릭을 유도하는 실질적인 제목을 지으세요.\n"
-            f"4. SEO: 'focus_keyphrase'는 3~4단어의 구체적인 검색 키워드여야 합니다.\n\n"
-            f"[엄격 규칙]\n"
-            f"1. 인사말 및 자기소개 금지: 본문 첫 문장에 인사나 신분 밝히기를 절대 하지 마세요.\n"
-            f"2. 블록 구조: AI는 구텐베르크 주석을 쓰지 마세요. 오직 순수 데이터만 생성하세요.\n"
-            f"3. 중복 금지: 앞에서 한 설명을 다른 단락에서 반복하지 마세요."
+            f"당신은 대한민국 최고의 금융 전문가이자 SEO 전문가입니다. 현재 시점은 2026년 2월입니다.\n"
+            f"[기존 발행글 제목] {self.recent_titles}\n\n"
+            f"[롱테일 키워드 전략: 뉴스보다 검색 의도 우선]\n"
+            f"1. 제공된 뉴스는 글의 '소재'일 뿐입니다. 뉴스를 그대로 전달하는 '보도형' 글은 금지합니다.\n"
+            f"2. 대신 독자가 실제로 검색할 법한 롱테일 키워드를 주제로 잡으세요.\n"
+            f"   - (예) 뉴스가 '건보료 인상'이라면 주제는 '국민연금 수령액과 건보료 피부양자 자격 유지 전략'으로 선정.\n"
+            f"   - (예) 뉴스가 '연금개혁'이라면 주제는 '전업주부가 지금 당장 국민연금 임의가입을 해야 하는 수익률적 근거'로 선정.\n"
+            f"3. 타겟팅: 전업주부, 이혼 가정, 군필자, 프리랜서 등 특정 페르소나의 문제를 해결해주는 가이드를 작성하세요.\n"
+            f"4. 제목: '어떻게 ~할까?', '~하는 법 총정리', '모르면 손해보는 ~' 등 클릭을 유도하는 제목을 지으세요.\n\n"
+            f"[필수 규칙]\n"
+            f"1. 인사말 금지: '안녕하십니까', '관리사입니다' 등의 소개 없이 바로 본론 제목과 내용으로 시작하세요.\n"
+            f"2. 리스트 형식: 나열형 정보는 반드시 'list' 타입을 사용하여 시각적으로 분리하세요.\n"
+            f"3. <a> 태그 활용: 문장 중간에 자연스럽게 <a href='https://www.nps.or.kr'>국민연금공단 공식 홈페이지</a> 링크를 볼드 처리하여 삽입하세요.\n"
+            f"4. 3,000자 이상의 충분한 정보량을 제공하세요."
         )
 
         schema = {
@@ -153,24 +134,23 @@ class WordPressAutoPoster:
             "required": ["title", "focus_keyphrase", "blocks", "tags", "excerpt"]
         }
         
-        prompt = f"최신 트렌드({news_context})를 참고하여, 검색량이 높고 독자들에게 실질적 혜택을 주는 롱테일 정보글을 3000자 이상의 상세한 블록 구조로 작성해줘."
+        prompt = f"참고 뉴스({news_context})를 데이터로 활용하되, 이를 독자의 실질적인 고민 해결로 연결하는 롱테일 SEO 최적화 글을 3000자 이상 작성해줘."
         data = self.call_gemini(prompt, system_instruction, schema)
         
         if not data: sys.exit(1)
         
-        # 파이썬 레벨에서 구텐베르크 블록 조립 (깨짐 현상 원천 차단)
         assembled = ""
         seen_para = set()
         for i, b in enumerate(data['blocks']):
             content = b['content'].strip()
             
-            # 인사말 및 불필요 문구 강제 필터링
+            # 인사말 강제 삭제 (첫 단락 필터링)
             if i == 0 and b['type'] == "p" and any(x in content for x in ["안녕", "안녕하십니까", "자산관리사", "전문가입니다", "칼럼니스트"]):
                 continue
 
             # 물리적 중복 제거 (지문 비교)
             fingerprint = re.sub(r'[^가-힣]', '', content)[:40]
-            if b['type'] == "p" and (fingerprint in seen_para or len(fingerprint) < 5): continue
+            if b['type'] == "p" and (fingerprint in seen_para or len(fingerprint) < 10): continue
             seen_para.add(fingerprint)
 
             if b['type'] == "h2":
@@ -178,12 +158,12 @@ class WordPressAutoPoster:
             elif b['type'] == "h3":
                 assembled += f"<!-- wp:heading {{\"level\":3}} -->\n<h3>{content}</h3>\n<!-- /wp:heading -->\n\n"
             elif b['type'] == "p":
-                # 내부 링크 삽입 (문장 중간 자동 통합)
+                # 내부 링크 자동 통합
                 if "국민연금공단" in content and "href" not in content:
                     content = content.replace("국민연금공단", "<a href='https://www.nps.or.kr' target='_self'><strong>국민연금공단</strong></a>", 1)
                 assembled += f"<!-- wp:paragraph -->\n<p>{content}</p>\n<!-- /wp:paragraph -->\n\n"
             elif b['type'] == "list":
-                # 리스트 항목 정렬 로직
+                # 리스트 항목 정렬 로직 (첫째, 둘째 등 감지 시 줄바꿈)
                 content = re.sub(r'([둘셋넷다섯]째|마지막으로),', r'\n\1,', content)
                 items = [item.strip() for item in content.split('\n') if item.strip()]
                 lis = "".join([f"<li>{item}</li>" for item in items])
@@ -193,31 +173,25 @@ class WordPressAutoPoster:
         return data
 
     def publish(self, data):
-        print("--- [Step 3] 워드프레스 발행 및 Yoast SEO 적용 ---")
-        tag_ids = self.get_or_create_tag_ids(data.get('tags', ''))
-        
+        print("--- [Step 3] 워드프레스 발행 중... ---")
         payload = {
             "title": data['title'],
             "content": data['assembled_content'],
             "excerpt": data['excerpt'],
             "status": "publish",
-            "tags": tag_ids,
-            "meta": {
-                "_yoast_wpseo_focuskw": data.get('focus_keyphrase', '')
-            }
+            "meta": {"_yoast_wpseo_focuskw": data.get('focus_keyphrase', '')}
         }
-        
         res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=60)
         return res.status_code == 201
 
     def run(self):
-        # 롱테일 키워드 소스 확보를 위해 '국민연금' 광범위 검색
-        news = self.search_naver_news("국민연금")
+        # 롱테일 소재 확보를 위해 포괄적인 검색어 사용
+        news = self.search_naver_news("국민연금 혜택 전략")
         if not news: sys.exit(1)
         post_data = self.generate_content(news)
         if self.publish(post_data):
             print(f"🎉 성공: {post_data['title']}")
-            print(f"✅ 초점 키워드: {post_data.get('focus_keyphrase')}")
+            print(f"✅ 롱테일 키워드: {post_data.get('focus_keyphrase')}")
         else:
             sys.exit(1)
 
