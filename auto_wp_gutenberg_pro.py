@@ -119,14 +119,12 @@ class WordPressAutoPoster:
         print(f"--- [Step 2.5] 본문 맞춤형 대표 이미지 생성 중... ---")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
-        # 이미지 생성을 위한 고도화된 영문 프롬프트 (본문 요약 참조 및 텍스트 배제 지침)
+        # 이미지 생성을 위한 고도화된 영문 프롬프트 (본문 요약 참조, 텍스트 배제 및 한국인 인물 포함 지침)
         image_prompt = (
             f"A high-end, professional financial conceptual photography for a blog post. "
             f"The article is about '{title}' and specifically discusses '{excerpt}'. "
             f"Visual theme: South Korean retirement planning and financial security. "
-            f"Recommended elements: A clean modern living room or home office, soft natural sunlight, "
-            f"symbols of growth and stability (like a healthy plant or high-quality paper documents), "
-            f"trustworthy and warm color palette (financial blue, soft beige, or gold). "
+            f"Recommended elements: A middle-aged Korean person (man or woman) with a warm, confident smile, looking relaxed and financially secure in a clean modern home setting or office. Soft natural sunlight, symbols of growth and stability (like a healthy plant or high-quality paper documents). "
             f"Style: Photorealistic, cinematic lighting, shallow depth of field, 16:9 aspect ratio. "
             f"CRITICAL: DO NOT include any text, letters, words, numbers, or characters of any kind in the image. "
             f"Focus on the mood and atmosphere of financial peace of mind."
@@ -262,7 +260,7 @@ class WordPressAutoPoster:
         tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
         print(f"✅ 태그 처리 완료 (ID: {tag_ids})")
         
-        # 3. 본문 내용을 반영한 대표 이미지 생성 및 업로드 (텍스트 배제)
+        # 3. 본문 내용을 반영한 대표 이미지 생성 및 업로드 (텍스트 배제, 한국인 인물 포함)
         image_base64 = self.generate_image(post_data['title'], post_data['excerpt'])
         media_id = self.upload_image_to_wp(image_base64, f"nps_{int(time.time())}.png")
         
