@@ -64,7 +64,6 @@ class WordPressAutoPoster:
         
         for name in tag_names:
             try:
-                # 1. 기존 태그 검색
                 res = self.session.get(f"{self.base_url}/wp-json/wp/v2/tags?search={name}", headers=self.common_headers)
                 tags = res.json()
                 match = next((t for t in tags if t['name'].lower() == name.lower()), None)
@@ -72,7 +71,6 @@ class WordPressAutoPoster:
                 if match:
                     tag_ids.append(match['id'])
                 else:
-                    # 2. 존재하지 않으면 새 태그 생성
                     create_res = self.session.post(f"{self.base_url}/wp-json/wp/v2/tags", headers=self.common_headers, json={"name": name})
                     if create_res.status_code == 201:
                         tag_ids.append(create_res.json()['id'])
@@ -116,12 +114,23 @@ class WordPressAutoPoster:
             time.sleep(5)
         return None
 
-    def generate_image(self, title):
-        """포스팅 제목을 기반으로 대표 이미지를 생성합니다."""
-        print(f"--- [Step 2.5] 대표 이미지 생성 중: {title} ---")
+    def generate_image(self, title, excerpt):
+        """포스팅 제목과 본문 요약을 기반으로 텍스트 없는 고도화 이미지를 생성합니다."""
+        print(f"--- [Step 2.5] 본문 맞춤형 대표 이미지 생성 중... ---")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
-        image_prompt = f"A professional and high-quality financial blog featured image for an article titled '{title}'. The image should represent 'National Pension' in South Korea, featuring a clean modern office desk with a calculator, piggy bank, and financial documents. High resolution, 16:9 aspect ratio, minimal and trustworthy style."
+        # 이미지 생성을 위한 고도화된 영문 프롬프트 (본문 요약 참조 및 텍스트 배제 지침)
+        image_prompt = (
+            f"A high-end, professional financial conceptual photography for a blog post. "
+            f"The article is about '{title}' and specifically discusses '{excerpt}'. "
+            f"Visual theme: South Korean retirement planning and financial security. "
+            f"Recommended elements: A clean modern living room or home office, soft natural sunlight, "
+            f"symbols of growth and stability (like a healthy plant or high-quality paper documents), "
+            f"trustworthy and warm color palette (financial blue, soft beige, or gold). "
+            f"Style: Photorealistic, cinematic lighting, shallow depth of field, 16:9 aspect ratio. "
+            f"CRITICAL: DO NOT include any text, letters, words, numbers, or characters of any kind in the image. "
+            f"Focus on the mood and atmosphere of financial peace of mind."
+        )
         
         payload = {
             "instances": {"prompt": image_prompt},
@@ -253,14 +262,14 @@ class WordPressAutoPoster:
         tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
         print(f"✅ 태그 처리 완료 (ID: {tag_ids})")
         
-        # 3. 제목 기반 이미지 생성 및 업로드
-        image_base64 = self.generate_image(post_data['title'])
+        # 3. 본문 내용을 반영한 대표 이미지 생성 및 업로드 (텍스트 배제)
+        image_base64 = self.generate_image(post_data['title'], post_data['excerpt'])
         media_id = self.upload_image_to_wp(image_base64, f"nps_{int(time.time())}.png")
         
         # 4. 발행 (특성 이미지 및 태그 포함)
         if self.publish(post_data, media_id, tag_ids):
             print(f"🎉 성공: {post_data['title']}")
-            if media_id: print(f"🖼️ 대표 이미지 등록 완료 (ID: {media_id})")
+            if media_id: print(f"🖼️ 맞춤형 대표 이미지 등록 완료 (ID: {media_id})")
         else:
             sys.exit(1)
 
