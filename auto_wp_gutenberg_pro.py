@@ -54,6 +54,33 @@ class WordPressAutoPoster:
         except: pass
         return []
 
+    def get_or_create_tags(self, tag_names_str):
+        """태그 이름을 ID 리스트로 변환합니다. 존재하지 않으면 생성합니다."""
+        if not tag_names_str:
+            return []
+        
+        tag_names = [t.strip() for t in tag_names_str.split(',') if t.strip()]
+        tag_ids = []
+        
+        for name in tag_names:
+            try:
+                # 1. 기존 태그 검색
+                res = self.session.get(f"{self.base_url}/wp-json/wp/v2/tags?search={name}", headers=self.common_headers)
+                tags = res.json()
+                match = next((t for t in tags if t['name'].lower() == name.lower()), None)
+                
+                if match:
+                    tag_ids.append(match['id'])
+                else:
+                    # 2. 존재하지 않으면 새 태그 생성
+                    create_res = self.session.post(f"{self.base_url}/wp-json/wp/v2/tags", headers=self.common_headers, json={"name": name})
+                    if create_res.status_code == 201:
+                        tag_ids.append(create_res.json()['id'])
+            except Exception as e:
+                print(f"⚠️ 태그 처리 중 오류 ({name}): {e}")
+                
+        return tag_ids
+
     def search_naver_news(self, query="국민연금 혜택 전략"):
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
@@ -94,7 +121,6 @@ class WordPressAutoPoster:
         print(f"--- [Step 2.5] 대표 이미지 생성 중: {title} ---")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
-        # 이미지 생성을 위한 영문 프롬프트 최적화
         image_prompt = f"A professional and high-quality financial blog featured image for an article titled '{title}'. The image should represent 'National Pension' in South Korea, featuring a clean modern office desk with a calculator, piggy bank, and financial documents. High resolution, 16:9 aspect ratio, minimal and trustworthy style."
         
         payload = {
@@ -144,7 +170,8 @@ class WordPressAutoPoster:
             f"1. 뉴스를 소재로 하되 독자가 검색할 법한 롱테일 주제를 선정하세요.\n"
             f"2. 인사말 없이 바로 본론 제목과 내용으로 시작하세요.\n"
             f"3. 3,000자 이상의 풍부한 정보량을 제공하세요.\n"
-            f"4. <a> 태그를 활용해 국민연금공단 링크를 삽입하세요."
+            f"4. <a> 태그를 활용해 국민연금공단 링크를 삽입하세요.\n"
+            f"5. 태그(tags)는 콤마(,)로 구분된 3~5개의 핵심 키워드로 작성하세요."
         )
 
         schema = {
@@ -201,7 +228,7 @@ class WordPressAutoPoster:
         data['assembled_content'] = assembled
         return data
 
-    def publish(self, data, media_id=None):
+    def publish(self, data, media_id=None, tag_ids=None):
         print("--- [Step 3] 워드프레스 발행 중... ---")
         payload = {
             "title": data['title'],
@@ -209,6 +236,7 @@ class WordPressAutoPoster:
             "excerpt": data['excerpt'],
             "status": "publish",
             "featured_media": media_id if media_id else 0,
+            "tags": tag_ids if tag_ids else [],
             "meta": {"_yoast_wpseo_focuskw": data.get('focus_keyphrase', '')}
         }
         res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=60)
@@ -221,12 +249,16 @@ class WordPressAutoPoster:
         # 1. 콘텐츠 생성
         post_data = self.generate_content(news)
         
-        # 2. 제목 기반 이미지 생성 및 업로드
+        # 2. 태그 처리 (이름 -> ID 변환)
+        tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
+        print(f"✅ 태그 처리 완료 (ID: {tag_ids})")
+        
+        # 3. 제목 기반 이미지 생성 및 업로드
         image_base64 = self.generate_image(post_data['title'])
         media_id = self.upload_image_to_wp(image_base64, f"nps_{int(time.time())}.png")
         
-        # 3. 발행 (특성 이미지 포함)
-        if self.publish(post_data, media_id):
+        # 4. 발행 (특성 이미지 및 태그 포함)
+        if self.publish(post_data, media_id, tag_ids):
             print(f"🎉 성공: {post_data['title']}")
             if media_id: print(f"🖼️ 대표 이미지 등록 완료 (ID: {media_id})")
         else:
