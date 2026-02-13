@@ -6,7 +6,16 @@ import re
 import os
 import random
 import sys
+import io
 from datetime import datetime
+
+# 이미지 처리를 위한 PIL 라이브러리
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다. 'pip install Pillow'가 필요합니다.")
 
 # ==============================================================================
 # 환경 변수 설정 (Github Secrets)
@@ -19,7 +28,7 @@ CONFIG = {
     "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
     "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", ""),
     "TEXT_MODEL": "gemini-2.5-flash-preview-09-2025",
-    "IMAGE_MODEL": "imagen-4.0-generate-001"
+    "IMAGE_MODEL": "gemini-2.5-flash-preview-09-2025" # 이미지 모델 변경
 }
 
 class WordPressAutoPoster:
@@ -41,8 +50,9 @@ class WordPressAutoPoster:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         }
         
-        # 최근 글 제목 30개 로드
+        # 최근 글 제목 30개 및 외부 링크 로드
         self.recent_titles = self.fetch_recent_post_titles(30)
+        self.external_link = self.load_external_link_from_json()
 
     def fetch_recent_post_titles(self, count=30):
         url = f"{self.base_url}/wp-json/wp/v2/posts"
@@ -54,32 +64,36 @@ class WordPressAutoPoster:
         except: pass
         return []
 
+    def load_external_link_from_json(self):
+        try:
+            with open('links.json', 'r', encoding='utf-8') as f:
+                links = json.load(f)
+                if links:
+                    chosen = random.choice(links)
+                    print(f"✅ 외부 링크 로드 완료: {chosen.get('title')}")
+                    return chosen
+        except Exception as e:
+            print(f"⚠️ links.json 로드 실패: {e}")
+        return None
+
     def get_or_create_tags(self, tag_names_str):
-        """태그 이름을 ID 리스트로 변환합니다. 존재하지 않으면 생성합니다."""
-        if not tag_names_str:
-            return []
-        
+        if not tag_names_str: return []
         tag_names = [t.strip() for t in tag_names_str.split(',') if t.strip()]
         tag_ids = []
-        
         for name in tag_names:
             try:
                 res = self.session.get(f"{self.base_url}/wp-json/wp/v2/tags?search={name}", headers=self.common_headers)
                 tags = res.json()
                 match = next((t for t in tags if t['name'].lower() == name.lower()), None)
-                
                 if match:
                     tag_ids.append(match['id'])
                 else:
                     create_res = self.session.post(f"{self.base_url}/wp-json/wp/v2/tags", headers=self.common_headers, json={"name": name})
-                    if create_res.status_code == 201:
-                        tag_ids.append(create_res.json()['id'])
-            except Exception as e:
-                print(f"⚠️ 태그 처리 중 오류 ({name}): {e}")
-                
+                    if create_res.status_code == 201: tag_ids.append(create_res.json()['id'])
+            except: continue
         return tag_ids
 
-    def search_naver_news(self, query="국민연금 혜택 전략"):
+    def search_naver_news(self, query="국민연금 개혁 전략"):
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"],
@@ -115,70 +129,95 @@ class WordPressAutoPoster:
         return None
 
     def generate_image(self, title, excerpt):
-        """포스팅 제목과 본문 요약을 기반으로 텍스트 없는 고도화 이미지를 생성합니다."""
-        print(f"--- [Step 2.5] 본문 맞춤형 대표 이미지 생성 중... ---")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
+        """이미지 모델 업데이트: gemini-2.5-flash-preview-09-2025 전용 로직"""
+        print(f"--- [Step 2.5] 대표 이미지 생성 중 (모델: {CONFIG['IMAGE_MODEL']}) ---")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         
-        # 이미지 생성을 위한 고도화된 영문 프롬프트 (본문 요약 참조, 텍스트 배제 및 한국인 인물 포함 지침)
+        # 한국인 인물 중심, 텍스트 배제 고도화 프롬프트
         image_prompt = (
-            f"A high-end, professional financial conceptual photography for a blog post. "
-            f"The article is about '{title}' and specifically discusses '{excerpt}'. "
-            f"Visual theme: South Korean retirement planning and financial security. "
-            f"Recommended elements: A middle-aged Korean person (man or woman) with a warm, confident smile, looking relaxed and financially secure in a clean modern home setting or office. Soft natural sunlight, symbols of growth and stability (like a healthy plant or high-quality paper documents). "
-            f"Style: Photorealistic, cinematic lighting, shallow depth of field, 16:9 aspect ratio. "
-            f"CRITICAL: DO NOT include any text, letters, words, numbers, or characters of any kind in the image. "
-            f"Focus on the mood and atmosphere of financial peace of mind."
+            f"Generate a high-quality professional photography for a blog post. "
+            f"Subject: A middle-aged South Korean person or elderly couple with a warm, confident smile, "
+            f"looking financially secure in a clean, modern, sun-lit Korean home environment. "
+            f"Theme: Reliable retirement planning and financial security. "
+            f"Visual Style: Cinematic lighting, photorealistic, soft depth of field, 16:9 aspect ratio. "
+            f"CRITICAL RULE: DO NOT INCLUDE ANY TEXT, LETTERS, OR CHARACTERS in the image."
         )
         
         payload = {
-            "instances": {"prompt": image_prompt},
-            "parameters": {"sampleCount": 1}
+            "contents": [{"parts": [{"text": image_prompt}]}],
+            "generationConfig": {
+                "responseModalities": ["IMAGE"]
+            }
         }
 
         try:
-            res = self.session.post(url, json=payload, timeout=90)
+            res = self.session.post(url, json=payload, timeout=120)
             if res.status_code == 200:
-                return res.json()['predictions'][0]['bytesBase64Encoded']
+                parts = res.json()['candidates'][0]['content']['parts']
+                image_part = next((p for p in parts if 'inlineData' in p), None)
+                if image_part:
+                    return image_part['inlineData']['data'] # base64 data
         except Exception as e:
             print(f"⚠️ 이미지 생성 실패: {e}")
         return None
 
-    def upload_image_to_wp(self, image_base64, filename="featured_image.png"):
-        """워드프레스 미디어 라이브러리에 이미지 업로드"""
+    def process_and_upload_image(self, image_base64, filename="featured_image.jpg"):
+        """생성된 이미지를 JPG 70% 품질로 변환 및 압축 후 업로드"""
         if not image_base64: return None
         
-        url = f"{self.base_url}/wp-json/wp/v2/media"
-        image_data = base64.b64decode(image_base64)
+        raw_data = base64.b64decode(image_base64)
         
+        if PIL_AVAILABLE:
+            try:
+                img = Image.open(io.BytesIO(raw_data))
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                
+                output = io.BytesIO()
+                img.save(output, format="JPEG", quality=70, optimize=True)
+                processed_data = output.getvalue()
+                print("✅ 이미지 JPG 변환 및 70% 압축 완료")
+            except Exception as e:
+                print(f"⚠️ 이미지 처리 오류: {e}")
+                processed_data = raw_data
+        else:
+            processed_data = raw_data
+
+        url = f"{self.base_url}/wp-json/wp/v2/media"
         headers = {
             "Authorization": f"Basic {self.auth_header}",
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Type": "image/png"
+            "Content-Type": "image/jpeg"
         }
 
         try:
-            res = self.session.post(url, headers=headers, data=image_data, timeout=60)
+            res = self.session.post(url, headers=headers, data=processed_data, timeout=60)
             if res.status_code == 201:
-                media_id = res.json().get('id')
-                print(f"✅ 미디어 업로드 성공 (ID: {media_id})")
-                return media_id
-        except Exception as e:
-            print(f"⚠️ 미디어 업로드 실패: {e}")
+                return res.json().get('id')
+        except: pass
         return None
 
     def generate_content(self, news_items):
-        print("--- [Step 2] 롱테일 키워드 기반 정보성 콘텐츠 생성 ---")
+        print("--- [Step 2] 롱테일 키워드 기반 정보성 콘텐츠 기획 ---")
         news_context = "\n".join([f"- {n['title']}: {n['desc']}" for n in news_items])
         
+        link_instruction = ""
+        if self.external_link:
+            link_instruction = (
+                f"또한, 글의 맥락상 가장 적절한 위치에 아래 외부 링크를 자연스럽게 한 번만 삽입하세요.\n"
+                f"삽입 형식: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
+            )
+
         system_instruction = (
-            f"당신은 대한민국 최고의 금융 전문가입니다. 현재 시점은 2026년 2월입니다.\n"
+            f"당신은 대한민국 최고의 금융 전문가이자 SEO 전문가입니다. 현재 시점은 2026년 2월입니다.\n"
             f"[기존 발행글 제목] {self.recent_titles}\n\n"
             f"[지침]\n"
-            f"1. 뉴스를 소재로 하되 독자가 검색할 법한 롱테일 주제를 선정하세요.\n"
-            f"2. 인사말 없이 바로 본론 제목과 내용으로 시작하세요.\n"
-            f"3. 3,000자 이상의 풍부한 정보량을 제공하세요.\n"
-            f"4. <a> 태그를 활용해 국민연금공단 링크를 삽입하세요.\n"
-            f"5. 태그(tags)는 콤마(,)로 구분된 3~5개의 핵심 키워드로 작성하세요."
+            f"1. 롱테일 키워드 전략: 독자가 실제로 검색할 법한 틈새 주제를 선정하세요.\n"
+            f"2. 인사말 금지: '안녕하십니까' 등의 자기소개 없이 바로 본론 제목과 핵심 내용으로 시작하세요.\n"
+            f"3. 분량: 3,000자 이상의 매우 상세하고 유용한 가이드 글을 작성하세요.\n"
+            f"4. 링크 삽입: 국민연금공단 공식 홈페이지 링크(https://www.nps.or.kr)를 포함하고,\n"
+            f"{link_instruction}\n"
+            f"5. 태그(tags): 콤마(,)로 구분된 3~5개의 핵심 키워드로 작성하세요."
         )
 
         schema = {
@@ -203,7 +242,7 @@ class WordPressAutoPoster:
             "required": ["title", "focus_keyphrase", "blocks", "tags", "excerpt"]
         }
         
-        prompt = f"참고 뉴스({news_context})를 데이터로 활용하여 독자의 실질적인 고민을 해결하는 롱테일 SEO 최적화 글을 3000자 이상 작성해줘."
+        prompt = f"참고 뉴스({news_context})를 기반으로 독자의 고민을 해결하는 고품질 롱테일 SEO 최적화 글을 작성해줘."
         data = self.call_gemini_text(prompt, system_instruction, schema)
         
         if not data: sys.exit(1)
@@ -253,21 +292,16 @@ class WordPressAutoPoster:
         news = self.search_naver_news("국민연금 혜택 전략")
         if not news: sys.exit(1)
         
-        # 1. 콘텐츠 생성
         post_data = self.generate_content(news)
-        
-        # 2. 태그 처리 (이름 -> ID 변환)
         tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
-        print(f"✅ 태그 처리 완료 (ID: {tag_ids})")
         
-        # 3. 본문 내용을 반영한 대표 이미지 생성 및 업로드 (텍스트 배제, 한국인 인물 포함)
+        # 이미지 생성 및 JPG 압축 업로드
         image_base64 = self.generate_image(post_data['title'], post_data['excerpt'])
-        media_id = self.upload_image_to_wp(image_base64, f"nps_{int(time.time())}.png")
+        media_id = self.process_and_upload_image(image_base64, f"nps_thumb_{int(time.time())}.jpg")
         
-        # 4. 발행 (특성 이미지 및 태그 포함)
         if self.publish(post_data, media_id, tag_ids):
             print(f"🎉 성공: {post_data['title']}")
-            if media_id: print(f"🖼️ 맞춤형 대표 이미지 등록 완료 (ID: {media_id})")
+            if media_id: print(f"🖼️ 대표 이미지(JPG 70%) 등록 완료 (ID: {media_id})")
         else:
             sys.exit(1)
 
