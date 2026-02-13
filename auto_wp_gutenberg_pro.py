@@ -128,7 +128,6 @@ class WordPressAutoPoster:
             extension = "png"
 
         filename = f"thumb_{int(time.time())}.{extension}"
-        # 미디어 업로드 API는 별도의 헤더 구성이 필요함
         media_headers = {
             "Authorization": f"Basic {self.auth}",
             "Content-Disposition": f'attachment; filename="{filename}"',
@@ -192,6 +191,7 @@ class WordPressAutoPoster:
         system = f"""대한민국 금융 전문가로서 2026년 2월 기준의 전문 칼럼을 작성하세요.
         - 인사말/자기소개 절대 금지.
         - 구텐베르크 블록 마커(<!-- wp:paragraph --> 등)를 사용하여 워드프레스 편집기 최적화.
+        - [중요] 리스트 작성 시 여러 항목을 하나의 <!-- wp:list --><ul>...</ul><!-- /wp:list --> 블록 안에 묶어서 작성하세요. 항목마다 블록을 새로 만들지 마세요.
         - 국민연금공단(https://www.nps.or.kr) 링크 포함.
         - {link_instr}
         - 3,000자 이상의 충분한 분량."""
@@ -202,15 +202,20 @@ class WordPressAutoPoster:
             print("❌ 본문 생성 실패")
             return
 
-        # 4. 이미지 생성 및 업로드 (핵심)
+        # 4. 리스트 블록 병합 로직 (잘못 생성된 중복 태그 정화)
+        content = post_data['content']
+        # </ul><!-- /wp:list --><!-- wp:list --><ul> 패턴을 제거하여 인접한 리스트를 하나로 합침
+        content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
+
+        # 5. 이미지 생성 및 업로드
         img_b64 = self.generate_image(post_data['title'])
         media_id = self.process_and_upload_media(img_b64, post_data['title'])
 
-        # 5. 최종 발행
+        # 6. 최종 발행
         print("🚀 워드프레스 최종 발행 시도 중...")
         payload = {
             "title": post_data['title'],
-            "content": post_data['content'],
+            "content": content,
             "excerpt": post_data['excerpt'],
             "status": "publish",
             "featured_media": int(media_id) if media_id else 0
