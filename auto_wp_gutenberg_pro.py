@@ -14,7 +14,7 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다.")
+    print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다. 이미지 압축 기능이 제한됩니다.")
 
 # ==============================================================================
 # 환경 변수 설정
@@ -38,7 +38,7 @@ class WordPressAutoPoster:
             "Authorization": f"Basic {self.auth}",
             "Content-Type": "application/json"
         }
-        # 외부 링크 및 최근 제목 로드
+        # 외부 링크 로드
         self.external_link = self.load_external_link()
 
     def load_external_link(self):
@@ -68,37 +68,89 @@ class WordPressAutoPoster:
 
     def generate_image(self, title):
         """본문 제목 기반 텍스트 없는 실사 이미지 생성"""
+        print(f"🎨 [이미지 생성 단계] 시도 중: {title}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
-        prompt = f"A professional high-quality financial blog header image about '{title}'. Featuring a clean modern office, warm cinematic lighting, Korean people in a reliable retirement setting. NO TEXT, 16:9 aspect ratio."
-        payload = {"instances": {"prompt": prompt}, "parameters": {"sampleCount": 1}}
+        
+        prompt = (
+            f"A professional, high-quality, 4k cinematic photography for a financial blog featured image. "
+            f"Subject: A Korean couple or professional in a trustworthy financial setting related to '{title}'. "
+            f"Warm sunlight, clean modern office, shallow depth of field. "
+            f"Strictly NO TEXT, NO LETTERS, 16:9 aspect ratio."
+        )
+        
+        payload = {
+            "instances": [{"prompt": prompt}], 
+            "parameters": {"sampleCount": 1}
+        }
+        
         try:
             res = requests.post(url, json=payload, timeout=90)
             if res.status_code == 200:
-                return res.json()['predictions'][0]['bytesBase64Encoded']
-        except: return None
+                result = res.json()
+                if 'predictions' in result and len(result['predictions']) > 0:
+                    print("✅ 이미지 데이터 생성 완료")
+                    return result['predictions'][0]['bytesBase64Encoded']
+                else:
+                    print(f"⚠️ API 응답에 이미지 데이터가 없습니다: {result}")
+            else:
+                print(f"❌ Imagen API 오류 ({res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"❌ 이미지 생성 중 예외 발생: {e}")
         return None
 
     def process_and_upload_media(self, img_b64, title):
-        """이미지를 JPG 70% 품질로 압축하여 업로드"""
-        if not img_b64: return None
+        """이미지를 처리하여 워드프레스에 업로드"""
+        if not img_b64:
+            return None
+            
+        print("📤 [미디어 업로드 단계] 워드프레스 전송 중...")
         raw_data = base64.b64decode(img_b64)
         
         if PIL_AVAILABLE:
-            img = Image.open(io.BytesIO(raw_data))
-            if img.mode != 'RGB': img = img.convert('RGB')
-            out = io.BytesIO()
-            img.save(out, format="JPEG", quality=70, optimize=True)
-            upload_data = out.getvalue()
+            try:
+                img = Image.open(io.BytesIO(raw_data))
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                out = io.BytesIO()
+                img.save(out, format="JPEG", quality=70, optimize=True)
+                upload_data = out.getvalue()
+                mime_type = "image/jpeg"
+                extension = "jpg"
+                print("⚡ JPG 70% 압축 완료")
+            except Exception as e:
+                print(f"⚠️ 이미지 변환 실패, 원본 업로드 시도: {e}")
+                upload_data = raw_data
+                mime_type = "image/png"
+                extension = "png"
         else:
             upload_data = raw_data
+            mime_type = "image/png"
+            extension = "png"
 
-        headers = {
+        filename = f"thumb_{int(time.time())}.{extension}"
+        # 미디어 업로드 API는 별도의 헤더 구성이 필요함
+        media_headers = {
             "Authorization": f"Basic {self.auth}",
-            "Content-Disposition": f'attachment; filename="thumb_{int(time.time())}.jpg"',
-            "Content-Type": "image/jpeg"
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": mime_type
         }
-        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=headers, data=upload_data)
-        return res.json().get('id') if res.status_code == 201 else None
+        
+        try:
+            upload_res = requests.post(
+                f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", 
+                headers=media_headers, 
+                data=upload_data, 
+                timeout=60
+            )
+            if upload_res.status_code == 201:
+                media_id = upload_res.json().get('id')
+                print(f"✅ 미디어 등록 성공! ID: {media_id}")
+                return media_id
+            else:
+                print(f"❌ 미디어 업로드 실패 ({upload_res.status_code}): {upload_res.text}")
+        except Exception as e:
+            print(f"❌ 미디어 업로드 중 예외 발생: {e}")
+        return None
 
     def call_gemini(self, prompt, system_instruction):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
@@ -123,42 +175,52 @@ class WordPressAutoPoster:
             res = requests.post(url, json=payload, timeout=120)
             if res.status_code == 200:
                 return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-        except: return None
+        except: pass
         return None
 
     def generate_post(self):
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 작업 시작")
-        news = self.search_naver_news("국민연금 개혁 전략")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 작업 시작 ---")
         
+        # 1. 소재 찾기
+        news = self.search_naver_news("국민연금 혜택")
+        
+        # 2. 본문 기획
         link_instr = ""
         if self.external_link:
             link_instr = f"본문 중간에 다음 링크를 자연스럽게 한 번 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
 
-        system = f"""대한민국 금융 전문가로서 2026년 2월 기준 3,000자 이상의 롱테일 정보글을 작성하세요.
-        - 인사말 및 자기소개 금지. 
-        - 구텐베르크 블록 마커(<!-- wp:paragraph --> 등)를 사용해 구조화하세요.
-        - 국민연금공단(https://www.nps.or.kr) 링크를 반드시 포함하세요.
+        system = f"""대한민국 금융 전문가로서 2026년 2월 기준의 전문 칼럼을 작성하세요.
+        - 인사말/자기소개 절대 금지.
+        - 구텐베르크 블록 마커(<!-- wp:paragraph --> 등)를 사용하여 워드프레스 편집기 최적화.
+        - 국민연금공단(https://www.nps.or.kr) 링크 포함.
         - {link_instr}
-        - 마크다운 기호 없이 순수 HTML/블록 마커만 사용하세요."""
+        - 3,000자 이상의 충분한 분량."""
 
-        post_data = self.call_gemini(f"참고 뉴스:\n{news}\n\n위 데이터를 활용해 롱테일 가이드를 작성해줘.", system)
-        if not post_data: return
+        # 3. 텍스트 생성
+        post_data = self.call_gemini(f"뉴스 참고:\n{news}\n\n위 내용을 기반으로 한 롱테일 정보성 가이드 작성.", system)
+        if not post_data:
+            print("❌ 본문 생성 실패")
+            return
 
-        # 이미지 생성 및 업로드
+        # 4. 이미지 생성 및 업로드 (핵심)
         img_b64 = self.generate_image(post_data['title'])
         media_id = self.process_and_upload_media(img_b64, post_data['title'])
 
-        # 워드프레스 발행
+        # 5. 최종 발행
+        print("🚀 워드프레스 최종 발행 시도 중...")
         payload = {
             "title": post_data['title'],
             "content": post_data['content'],
             "excerpt": post_data['excerpt'],
             "status": "publish",
-            "featured_media": media_id if media_id else 0
+            "featured_media": int(media_id) if media_id else 0
         }
-        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload)
+        
+        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload, timeout=60)
         if res.status_code == 201:
-            print(f"🎉 성공: {post_data['title']}")
+            print(f"🎉 최종 발행 성공: {res.json().get('link')}")
+        else:
+            print(f"❌ 발행 실패 ({res.status_code}): {res.text}")
 
 if __name__ == "__main__":
     WordPressAutoPoster().generate_post()
