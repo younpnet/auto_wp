@@ -139,7 +139,7 @@ class WordPressAutoPoster:
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "temperature": 0.8,
-                "maxOutputTokens": 8192, # 충분한 출력량을 확보하여 본문 잘림 방지
+                "maxOutputTokens": 8192,
                 "responseSchema": {
                     "type": "OBJECT",
                     "properties": {
@@ -164,6 +164,21 @@ class WordPressAutoPoster:
             print(f"❌ AI 호출 중 오류 발생: {e}")
         return None
 
+    def clean_content(self, content):
+        """본문 내 불필요한 AI 생성 주석 및 중복 블록 제거"""
+        if not content: return ""
+        
+        # 1. AI가 삽입한 //paragraph, //heading 등의 불필요한 텍스트 제거
+        content = re.sub(r'//(paragraph|heading|list|table)', '', content, flags=re.IGNORECASE)
+        
+        # 2. 리스트 블록 병합 (끊겨 있는 리스트를 하나로 합침)
+        content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
+        
+        # 3. 마크다운 잔재 제거 (AI가 실수로 포함한 경우)
+        content = content.replace('```html', '').replace('```', '')
+        
+        return content.strip()
+
     def generate_post(self):
         print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 작업 시작 ---")
         news = self.search_naver_news()
@@ -177,27 +192,26 @@ class WordPressAutoPoster:
 
 [필수 요구사항]
 1. 분량: 3,000자 이상의 매우 상세한 정보글을 작성하세요. 절대 중간에 요약하거나 끊지 마세요.
-2. 페르소나: 단순히 정보를 나열하는 기계가 아니라, 독자의 미래를 진심으로 걱정하고 전문적인 대안을 제시하는 전문가의 어조(전문성 + 인간미)를 유지하세요.
-3. 중복 방지: 이미 다음 주제들로 글을 썼습니다: {self.recent_titles}. 이와 절대 겹치지 않는 새로운 시각이나 니치한 정보를 다루세요.
-4. 구조: 반드시 구텐베르크 블록 마커(<!-- wp:heading -->, <!-- wp:paragraph -->, <!-- wp:list -->)를 사용하여 워드프레스 편집기에서 완벽하게 보이도록 하세요.
-5. 구성 요소:
-   - 전문가적 시각이 담긴 서론
-   - h2, h3 소제목을 활용한 체계적인 본론 (수치와 구체적 사례 포함)
-   - {link_instr}
-   - 국민연금공단(https://www.nps.or.kr) 링크 포함
-   - 마지막에 상세한 FAQ 섹션 (3개 이상의 질문과 답변)
-   - 전문가 제언이 담긴 결론
+2. 페르소나: 노후 준비에 대한 전문적인 조언과 인간적인 공감이 느껴지는 어조를 유지하세요.
+3. 중복 방지: 이미 다음 주제들로 글을 썼습니다: {self.recent_titles}. 이와 절대 겹치지 않는 새로운 시각을 제시하세요.
+4. 구조: 반드시 구텐베르크 블록 마커(<!-- wp:heading -->, <!-- wp:paragraph -->, <!-- wp:list -->)만 사용하세요.
+5. 주의: 본문 내에 //paragraph 같은 불필요한 텍스트나 주석을 절대 포함하지 마세요. 오직 HTML 태그와 워드프레스 블록 주석만 허용됩니다.
 
-[주의사항]
-- 인사말('안녕하십니까' 등) 없이 바로 제목과 본문으로 시작하세요.
-- 제목 끝에 연도 관련 문구(예: 2026년 최신 가이드)를 자연스럽게 포함하세요.
-- 마크다운 기호(#, **)를 쓰지 말고 오직 HTML과 블록 마커만 사용하세요."""
+[구성 요소]
+- 전문가적 시각이 담긴 서론
+- h2, h3 소제목을 활용한 체계적인 본론
+- {link_instr}
+- 국민연금공단(https://www.nps.or.kr) 링크 포함
+- 마지막에 상세한 FAQ 섹션과 전문가 제언"""
 
         post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 바탕으로 당신의 전문 지식을 동원해 독창적이고 풍부한 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content') or len(post_data['content']) < 500:
             print("❌ 본문이 생성되지 않았거나 내용이 너무 짧습니다. 발행을 중단합니다.")
             return
+
+        # 본문 정제 (//paragraph 제거 로직 포함)
+        post_data['content'] = self.clean_content(post_data['content'])
 
         # 태그 ID 처리
         tag_ids = self.get_or_create_tag_ids(post_data.get('tags', ''))
