@@ -38,103 +38,100 @@ class WordPressAutoPoster:
             "Authorization": f"Basic {self.auth}"
         }
         self.external_link = self.load_external_link()
+        # 중복 방지를 위한 최근 글 제목 로드
+        self.recent_titles = self.fetch_recent_post_titles(50)
+
+    def fetch_recent_post_titles(self, count=50):
+        """워드프레스에서 최근 발행된 글 제목들을 가져옵니다."""
+        print(f"🔍 중복 방지를 위해 최근 글 {count}개를 분석 중...")
+        url = f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts"
+        params = {"per_page": count, "status": "publish", "_fields": "title"}
+        try:
+            res = requests.get(url, headers=self.headers, params=params, timeout=20)
+            if res.status_code == 200:
+                return [re.sub('<.*?>', '', post['title']['rendered']).strip() for post in res.json()]
+        except Exception as e:
+            print(f"⚠️ 최근 글 로드 실패: {e}")
+        return []
+
+    def get_or_create_tag_ids(self, tags_input):
+        """텍스트 태그를 받아 워드프레스 ID로 변환 (없으면 생성)"""
+        if not tags_input: return []
+        tag_names = [t.strip() for t in tags_input.split(',')]
+        tag_ids = []
+        for name in tag_names:
+            try:
+                # 1. 태그 존재 확인
+                search_url = f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags?search={name}"
+                res = requests.get(search_url, headers=self.headers)
+                existing = res.json()
+                match = next((t for t in existing if t['name'].lower() == name.lower()), None)
+                
+                if match:
+                    tag_ids.append(match['id'])
+                else:
+                    # 2. 없으면 생성
+                    create_res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags", 
+                                             headers=self.headers, json={"name": name})
+                    if create_res.status_code == 201:
+                        tag_ids.append(create_res.json()['id'])
+            except: continue
+        return tag_ids
 
     def load_external_link(self):
-        """links.json에서 무작위 링크 1개를 가져옵니다."""
         try:
             if os.path.exists('links.json'):
                 with open('links.json', 'r', encoding='utf-8') as f:
                     links = json.load(f)
-                    if links:
-                        return random.choice(links)
+                    if links: return random.choice(links)
         except: pass
         return None
 
-    def search_naver_news(self, query="국민연금"):
+    def search_naver_news(self):
+        """검색 키워드를 랜덤화하여 소재 중복 방지"""
+        queries = ["국민연금 개혁안", "국민연금 수령액 늘리는 법", "국민연금 추납 반납", "기초연금 국민연금 연계", "퇴직연금 운용 전략"]
+        query = random.choice(queries)
+        print(f"📰 뉴스 검색 키워드: {query}")
+        
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"],
             "X-Naver-Client-Secret": CONFIG["NAVER_CLIENT_SECRET"]
         }
-        params = {"query": query, "display": 12, "sort": "sim"}
+        params = {"query": query, "display": 10, "sort": "sim"}
         try:
             res = requests.get(url, headers=headers, params=params, timeout=20)
             if res.status_code == 200:
-                items = res.json().get('items', [])
-                return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}: {re.sub('<.*?>', '', i['description'])}" for i in items])
-        except: return "최근 국민연금 주요 이슈 및 개혁안 분석"
+                return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}: {re.sub('<.*?>', '', i['description'])}" for i in res.json().get('items', [])])
+        except: return "국민연금 최신 동향 및 재테크 전략"
         return ""
 
     def generate_image(self, title):
-        """본문 제목 기반 이미지 생성"""
-        print(f"🎨 [이미지 생성 단계] 시도 중: {title}")
+        print(f"🎨 이미지 생성 중: {title}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
-        
-        prompt = (
-            f"A high-end professional lifestyle photography for a South Korean finance blog. "
-            f"Subject: A Korean couple or professional in a sun-drenched modern Korean living room, looking happy and secure about their future. "
-            f"Context: {title}. Realistic, cinematic lighting, shallow depth of field. "
-            f"Strictly NO TEXT, NO LETTERS, NO NUMBERS, 16:9 aspect ratio."
-        )
-        
-        payload = {
-            "instances": [{"prompt": prompt}], 
-            "parameters": {"sampleCount": 1}
-        }
-        
+        prompt = f"Professional finance blog header, Korean middle-aged couple smiling happily in a sunny modern home, financial security theme, photorealistic, 16:9, NO TEXT."
+        payload = {"instances": [{"prompt": prompt}], "parameters": {"sampleCount": 1}}
         try:
             res = requests.post(url, json=payload, timeout=100)
             if res.status_code == 200:
-                result = res.json()
-                if 'predictions' in result and len(result['predictions']) > 0:
-                    return result['predictions'][0]['bytesBase64Encoded']
-            else:
-                print(f"❌ 이미지 생성 API 오류 ({res.status_code}): {res.text}")
-        except Exception as e:
-            print(f"❌ 이미지 생성 중 예외 발생: {e}")
+                return res.json()['predictions'][0]['bytesBase64Encoded']
+        except: return None
         return None
 
-    def process_and_upload_media(self, img_b64):
-        """이미지 업로드 (Multipart 방식으로 500 에러 해결 시도)"""
+    def upload_media(self, img_b64):
         if not img_b64: return None
-            
-        print("📤 [미디어 업로드 단계] 워드프레스 전송 중...")
         raw_data = base64.b64decode(img_b64)
-        
         if PIL_AVAILABLE:
             try:
-                img = Image.open(io.BytesIO(raw_data))
-                if img.mode != 'RGB': img = img.convert('RGB')
+                img = Image.open(io.BytesIO(raw_data)).convert('RGB')
                 out = io.BytesIO()
                 img.save(out, format="JPEG", quality=70, optimize=True)
-                upload_data = out.getvalue()
-                ext = "jpg"
-                mime_type = "image/jpeg"
-                print("⚡ JPG 70% 압축 완료")
-            except:
-                upload_data = raw_data
-                ext = "png"
-                mime_type = "image/png"
-        else:
-            upload_data = raw_data
-            ext = "png"
-            mime_type = "image/png"
-
-        filename = f"thumb_{int(time.time())}.{ext}"
-        files = {'file': (filename, upload_data, mime_type)}
-        headers = {"Authorization": f"Basic {self.auth}"}
+                raw_data = out.getvalue()
+            except: pass
         
-        try:
-            res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=headers, files=files, timeout=60)
-            if res.status_code == 201:
-                mid = res.json().get('id')
-                print(f"✅ 미디어 등록 성공 (ID: {mid})")
-                return mid
-            else:
-                print(f"❌ 미디어 업로드 실패 ({res.status_code}): {res.text}")
-        except Exception as e:
-            print(f"❌ 미디어 업로드 중 예외 발생: {e}")
-        return None
+        headers = {"Authorization": f"Basic {self.auth}", "Content-Type": "image/jpeg", "Content-Disposition": f'attachment; filename="nps_{int(time.time())}.jpg"'}
+        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=headers, data=raw_data)
+        return res.json().get('id') if res.status_code == 201 else None
 
     def call_gemini(self, prompt, system_instruction):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
@@ -143,126 +140,62 @@ class WordPressAutoPoster:
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.7,
-                "maxOutputTokens": 8192,  # 충분한 토큰을 할당하여 장문이 잘리지 않도록 함
+                "temperature": 0.8,
+                "maxOutputTokens": 8192,
                 "responseSchema": {
                     "type": "OBJECT",
                     "properties": {
                         "title": {"type": "string"},
                         "content": {"type": "string"},
-                        "excerpt": {"type": "string"}
+                        "excerpt": {"type": "string"},
+                        "tags": {"type": "string"}
                     },
-                    "required": ["title", "content", "excerpt"]
+                    "required": ["title", "content", "excerpt", "tags"]
                 }
             }
         }
         try:
             res = requests.post(url, json=payload, timeout=180)
             if res.status_code == 200:
-                try:
-                    data = json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-                    if not data.get('content') or len(data['content']) < 500:
-                        print("⚠️ 경고: AI가 본문을 너무 짧게 생성했거나 생성하지 않았습니다.")
-                    return data
-                except (json.JSONDecodeError, KeyError) as e:
-                    print(f"❌ JSON 파싱 에러: {e}")
-            else:
-                print(f"❌ API 요청 실패 ({res.status_code}): {res.text}")
-        except Exception as e:
-            print(f"❌ 텍스트 생성 중 예외 발생: {e}")
+                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
+        except: pass
         return None
 
-    def clean_content(self, content):
-        """본문 중복 제거 및 리스트 블록 안전 병합"""
-        if not content: return ""
-        # 1. 리스트 블록 병합
-        content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
-        
-        # 2. 문단 단위 중복 제거 로직 개선
-        blocks = re.split(r'(<!-- wp:)', content)
-        if len(blocks) < 2: return content
-        
-        refined_blocks = [blocks[0]]
-        seen_fingerprints = set()
-        
-        for i in range(1, len(blocks), 2):
-            block_marker = blocks[i]
-            block_body = blocks[i+1] if (i+1) < len(blocks) else ""
-            full_block = block_marker + block_body
-            
-            if "wp:paragraph" in block_marker:
-                text_only = re.sub(r'<[^>]+>', '', block_body).strip()
-                if len(text_only) > 15:
-                    fingerprint = re.sub(r'[^가-힣]', '', text_only)[:40]
-                    if fingerprint in seen_fingerprints:
-                        continue
-                    seen_fingerprints.add(fingerprint)
-            
-            refined_blocks.append(full_block)
-            
-        return "".join(refined_blocks)
-
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 국민연금 전문가 칼럼 생성 시작 ---")
-        news = self.search_naver_news("국민연금 개혁 전략")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 작업 시작 ---")
+        news = self.search_naver_news()
+        link_instr = f"중간에 링크 삽입: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>" if self.external_link else ""
         
-        link_instr = ""
-        if self.external_link:
-            link_instr = f"본문 중간에 자연스럽게 다음 링크를 앵커 텍스트 형식으로 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
+        system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 칼럼을 작성하세요.
+        [중복 금지] 이미 다음 주제들로 글을 썼습니다: {self.recent_titles}. 이와 겹치지 않는 새로운 시각을 제시하세요.
+        [가이드] 인사말 없이 바로 본론 제목으로 시작하세요. 전문가의 냉철한 분석과 따뜻한 조언이 섞인 인간적인 문체로 작성하세요.
+        반드시 구텐베르크 블록 마커(heading, paragraph, list)를 사용하고, 3000자 이상 장문으로 작성하세요.
+        국민연금공단(https://www.nps.or.kr) 링크를 포함하고, {link_instr}도 적절히 배치하세요.
+        FAQ 섹션을 필수로 포함하고 제목 끝에 연도 관련 문구를 자연스럽게 넣으세요."""
 
-        system = f"""당신은 대한민국 최고의 노후 자산 관리 전문가이자 금융 칼럼니스트입니다. 
-        독자들에게 단순히 정보를 나열하는 것이 아니라, 전문가의 통찰력과 진정성이 느껴지는 롱테일 가이드(3,000자 이상)를 작성하세요.
+        post_data = self.call_gemini(f"뉴스:\n{news}\n를 바탕으로 전문가 칼럼을 작성해줘.", system)
+        if not post_data: return
 
-        [제목 전략]
-        - 제목 맨 앞에 '2026년'이나 '2월'을 기계적으로 붙이지 마세요.
-        - 독자의 절실한 고민을 건드리는 핵심 키워드로 제목을 시작하고, 제목 끝에 '(2026년 업데이트)', '[2026 최신 기준]' 등 신뢰도 높은 문구를 자연스럽게 배치하세요.
+        # 태그 ID 처리
+        tag_ids = self.get_or_create_tag_ids(post_data.get('tags', ''))
 
-        [본문 필수 구성 - 절대 생략 금지]
-        1. 서론: 현재의 연금 개혁 트렌드와 독자가 직면한 문제 제기.
-        2. 본론: 최소 4개 이상의 h2 소제목 섹션. 구체적인 수치와 법적 근거 제시.
-        3. 전문가 제언: 독자의 지갑을 지킬 수 있는 실질적인 Action Plan 조언.
-        4. 자주 묻는 질문(FAQ): 반드시 <!-- wp:heading {{"level":2}} --><h2>자주 묻는 질문(FAQ)</h2> 블록을 만들고 3개 이상의 질문과 답변을 상세히 작성하세요.
-        5. 결론: 노후 준비에 대한 격려와 마무리 인사.
+        # 이미지 처리
+        img_id = self.upload_media(self.generate_image(post_data['title']))
 
-        [본문 작성 원칙]
-        - 인사말('안녕하십니까' 등)은 절대 하지 마세요. 바로 강렬한 화두로 본론을 시작하세요.
-        - 구조화: 반드시 구텐베르크 블록 마커(heading, paragraph, list, table)를 사용하여 웹 환경에 최적화하세요.
-        - 3,000자 이상의 풍부한 정보량을 제공하며, 절대 요약하거나 중간에 내용을 자르지 마세요.
-        - {link_instr}
-        - 국민연금공단(https://www.nps.or.kr) 공식 홈페이지를 출처로 언급하며 링크하세요.
-
-        [데이터 구조]
-        JSON 객체(title, content, excerpt)로 응답하세요. content 필드 내부에 모든 구텐베르크 HTML을 포함해야 합니다."""
-
-        post_data = self.call_gemini(f"최신 뉴스 소스:\n{news}\n\n위 데이터를 기반으로 실생활에 밀접하고 정보량이 방대한 전문가 칼럼을 작성해줘. FAQ 섹션은 필수로 포함해.", system)
-        if not post_data or not post_data.get('content'):
-            print("❌ 본문 데이터 생성 실패로 작업을 중단합니다.")
-            return
-
-        refined_content = self.clean_content(post_data['content'])
-
-        img_b64 = self.generate_image(post_data['title'])
-        media_id = self.process_and_upload_media(img_b64)
-
-        print("🚀 워드프레스 최종 발행 시도 중...")
+        # 최종 발행
         payload = {
             "title": post_data['title'],
-            "content": refined_content,
+            "content": post_data['content'],
             "excerpt": post_data['excerpt'],
             "status": "publish",
-            "featured_media": int(media_id) if media_id else 0
+            "featured_media": img_id if img_id else 0,
+            "tags": tag_ids
         }
-        
-        headers = {
-            "Authorization": f"Basic {self.auth}",
-            "Content-Type": "application/json"
-        }
-        
-        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=headers, json=payload, timeout=60)
+        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload)
         if res.status_code == 201:
-            print(f"🎉 최종 발행 성공: {res.json().get('link')}")
+            print(f"🎉 발행 성공: {post_data['title']}")
         else:
-            print(f"❌ 발행 실패 ({res.status_code}): {res.text}")
+            print(f"❌ 실패: {res.text}")
 
 if __name__ == "__main__":
     WordPressAutoPoster().generate_post()
