@@ -86,11 +86,9 @@ class WordPressAutoPoster:
         return None
 
     def search_naver_news(self):
-        """검색 키워드를 랜덤화하여 소재 중복 방지"""
-        queries = ["국민연금 개혁안", "국민연금 수령액 늘리는 법", "국민연금 추납 반납", "기초연금 국민연금 연계", "퇴직연금 운용 전략"]
+        """다양한 키워드로 뉴스 검색하여 소재 고갈 방지"""
+        queries = ["국민연금 수령액 늘리는 전략", "2026년 국민연금 개편 전망", "노후 자산관리 팁", "연금저축 IRP 활용법", "기초연금 기준 변경"]
         query = random.choice(queries)
-        print(f"📰 뉴스 검색 키워드: {query}")
-        
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"],
@@ -101,13 +99,13 @@ class WordPressAutoPoster:
             res = requests.get(url, headers=headers, params=params, timeout=20)
             if res.status_code == 200:
                 return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}: {re.sub('<.*?>', '', i['description'])}" for i in res.json().get('items', [])])
-        except: return "국민연금 최신 동향 및 재테크 전략"
+        except: return "국민연금 최신 이슈 및 노후 설계 전략"
         return ""
 
     def generate_image(self, title):
         print(f"🎨 이미지 생성 중: {title}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
-        prompt = f"Professional finance blog header, Korean middle-aged couple smiling happily in a sunny modern home, financial security theme, photorealistic, 16:9, NO TEXT."
+        prompt = f"Professional and high-end lifestyle photography for a Korean finance blog. A middle-aged Korean couple looking happy in a sunlit modern home. Theme: retirement and pension security. Photorealistic, 16:9, NO TEXT."
         payload = {"instances": [{"prompt": prompt}], "parameters": {"sampleCount": 1}}
         try:
             res = requests.post(url, json=payload, timeout=100)
@@ -138,7 +136,7 @@ class WordPressAutoPoster:
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.8,
+                "temperature": 0.85, # 다양성을 높여 반복 생성 방지
                 "maxOutputTokens": 8192,
                 "responseSchema": {
                     "type": "OBJECT",
@@ -155,62 +153,77 @@ class WordPressAutoPoster:
         try:
             res = requests.post(url, json=payload, timeout=300)
             if res.status_code == 200:
-                result_json = res.json()
-                if 'candidates' in result_json:
-                    return json.loads(result_json['candidates'][0]['content']['parts'][0]['text'])
+                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
             else:
-                print(f"❌ AI 호출 실패 ({res.status_code}): {res.text}")
+                print(f"❌ AI 호출 실패: {res.text}")
         except Exception as e:
-            print(f"❌ AI 호출 중 오류 발생: {e}")
+            print(f"❌ 오류: {e}")
         return None
 
     def clean_content(self, content):
-        """본문 내 불필요한 AI 생성 주석 및 중복 블록 제거"""
+        """본문 내 불필요한 AI 생성 주석(//paragraph 등) 및 반복 블록 완벽 제거"""
         if not content: return ""
         
-        # 1. AI가 삽입한 //paragraph, //heading 등의 불필요한 텍스트 제거
-        content = re.sub(r'//(paragraph|heading|list|table)', '', content, flags=re.IGNORECASE)
+        # 1. //paragraph, //heading 등 슬래시 주석 완벽 제거 (정규표현식 강화)
+        content = re.sub(r'//[a-zA-Z]+', '', content)
         
-        # 2. 리스트 블록 병합 (끊겨 있는 리스트를 하나로 합침)
+        # 2. 리스트 블록 병합 (끊겨 있는 리스트 통합)
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
-        # 3. 마크다운 잔재 제거 (AI가 실수로 포함한 경우)
+        # 3. 마크다운 기호 및 코드 블록 감싸기 제거
         content = content.replace('```html', '').replace('```', '')
         
-        return content.strip()
+        # 4. 문단 단위 중복 지문 검사 및 제거 (Image 2의 무한 루프 방지)
+        paragraphs = re.split(r'(<!-- wp:[^>]+-->)', content)
+        seen_fingerprints = set()
+        refined_blocks = []
+        
+        for i in range(0, len(paragraphs)):
+            block = paragraphs[i]
+            # 텍스트가 있는 블록만 지문 추출
+            text_only = re.sub(r'<[^>]+>', '', block).strip()
+            if len(text_only) > 30:
+                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:50]
+                if fingerprint in seen_fingerprints:
+                    continue # 중복된 내용은 추가하지 않음
+                seen_fingerprints.add(fingerprint)
+            refined_blocks.append(block)
+            
+        return "".join(refined_blocks).strip()
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 작업 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 고품질 포스팅 생성 시작 ---")
         news = self.search_naver_news()
         
         # 외부 링크 구성
         link_instr = ""
         if self.external_link:
-            link_instr = f"글의 맥락에 맞춰 다음 링크를 <a> 태그로 자연스럽게 한 번만 삽입하세요: {self.external_link['title']} ({self.external_link['url']})"
+            link_instr = f"글의 맥락에 맞춰 다음 링크를 <a> 태그로 본문 중간에 자연스럽게 한 번만 삽입하세요: {self.external_link['title']} ({self.external_link['url']})"
         
-        system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
+        system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 독자들에게 통찰력 있는 전문가 칼럼을 작성하세요.
 
-[필수 요구사항]
-1. 분량: 3,000자 이상의 매우 상세한 정보글을 작성하세요. 절대 중간에 요약하거나 끊지 마세요.
-2. 페르소나: 노후 준비에 대한 전문적인 조언과 인간적인 공감이 느껴지는 어조를 유지하세요.
-3. 중복 방지: 이미 다음 주제들로 글을 썼습니다: {self.recent_titles}. 이와 절대 겹치지 않는 새로운 시각을 제시하세요.
-4. 구조: 반드시 구텐베르크 블록 마커(<!-- wp:heading -->, <!-- wp:paragraph -->, <!-- wp:list -->)만 사용하세요.
-5. 주의: 본문 내에 //paragraph 같은 불필요한 텍스트나 주석을 절대 포함하지 마세요. 오직 HTML 태그와 워드프레스 블록 주석만 허용됩니다.
+[필수 요구사항 - 반복 금지]
+1. 반복 금지: 서론, 본론, FAQ, 결론에서 동일한 문장이나 핵심 조언을 복사해서 붙여넣지 마세요. 각 섹션은 반드시 '새로운' 정보나 시각을 담아야 합니다.
+2. 분량: 3,000자 이상의 상세한 정보글을 작성하세요.
+3. 페르소나: 노후 설계에 대한 전문적인 비판과 실질적인 대안을 제시하는 전문가의 어조를 유지하세요.
+4. 중복 방지: 이미 다음 주제들로 글을 썼습니다: {self.recent_titles}. 이와 절대 겹치지 않는 새로운 주제를 선정하세요.
+5. 금지: 본문 내에 //paragraph 같은 불필요한 주석이나 가짜 마커를 절대 포함하지 마세요. 오직 구텐베르크 주석(<!-- wp:paragraph --> 등)만 사용하세요.
 
 [구성 요소]
-- 전문가적 시각이 담긴 서론
-- h2, h3 소제목을 활용한 체계적인 본론
+- 화두를 던지는 전문가적 서론
+- h2, h3 소제목을 활용한 체계적인 본론 (데이터와 수치 활용)
 - {link_instr}
-- 국민연금공단(https://www.nps.or.kr) 링크 포함
-- 마지막에 상세한 FAQ 섹션과 전문가 제언"""
+- 국민연금공단(https://www.nps.or.kr) 공식 링크 포함
+- 3개 이상의 상세한 Q&A (FAQ)
+- 독자의 실천을 독려하는 결론"""
 
-        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 바탕으로 당신의 전문 지식을 동원해 독창적이고 풍부한 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"참고 뉴스:\n{news}\n\n위 데이터를 바탕으로 당신의 통찰을 담은 3,000자 이상의 초고품질 전문가 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content') or len(post_data['content']) < 500:
-            print("❌ 본문이 생성되지 않았거나 내용이 너무 짧습니다. 발행을 중단합니다.")
+            print("❌ 본문 생성 실패")
             return
 
-        # 본문 정제 (//paragraph 제거 로직 포함)
+        # 본문 정제 (//paragraph 제거 및 내용 반복 제거)
         post_data['content'] = self.clean_content(post_data['content'])
 
         # 태그 ID 처리
@@ -220,7 +233,7 @@ class WordPressAutoPoster:
         img_id = self.upload_media(self.generate_image(post_data['title']))
 
         # 최종 발행
-        print("🚀 워드프레스 최종 발행 시도 중...")
+        print("🚀 워드프레스 최종 발행 중...")
         payload = {
             "title": post_data['title'],
             "content": post_data['content'],
@@ -233,9 +246,8 @@ class WordPressAutoPoster:
         res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload, timeout=60)
         if res.status_code == 201:
             print(f"🎉 발행 성공: {post_data['title']}")
-            print(f"🔗 링크: {res.json().get('link')}")
         else:
-            print(f"❌ 워드프레스 발행 실패 ({res.status_code}): {res.text}")
+            print(f"❌ 실패: {res.text}")
 
 if __name__ == "__main__":
     WordPressAutoPoster().generate_post()
