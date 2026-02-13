@@ -9,7 +9,7 @@ import sys
 import io
 from datetime import datetime
 
-# 이미지 처리를 위한 PIL 라이브러리
+# 이미지 처리를 위한 PIL 라이브러리 (JPG 변환 및 압축용)
 try:
     from PIL import Image
     PIL_AVAILABLE = True
@@ -28,7 +28,7 @@ CONFIG = {
     "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
     "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", ""),
     "TEXT_MODEL": "gemini-2.5-flash-preview-09-2025",
-    "IMAGE_MODEL": "imagen-4.0-generate-001" # 이미지 모델을 다시 imagen-4.0으로 변경
+    "IMAGE_MODEL": "imagen-4.0-generate-001" # 이미지 생성 최적화 모델
 }
 
 class WordPressAutoPoster:
@@ -65,6 +65,7 @@ class WordPressAutoPoster:
         return []
 
     def load_external_link_from_json(self):
+        """제공된 JSON 형식(title, url)에서 무작위 링크 1개를 가져옵니다."""
         try:
             with open('links.json', 'r', encoding='utf-8') as f:
                 links = json.load(f)
@@ -129,22 +130,21 @@ class WordPressAutoPoster:
         return None
 
     def generate_image(self, title, excerpt):
-        """imagen-4.0-generate-001 모델 전용 이미지 생성 로직"""
-        print(f"--- [Step 2.5] 대표 이미지 생성 중 (모델: {CONFIG['IMAGE_MODEL']}) ---")
-        # Imagen 모델은 predict 엔드포인트를 사용합니다.
+        """본문 내용과 제목을 참조하여 텍스트 없는 고도화 이미지 생성"""
+        print(f"--- [Step 2.5] 본문 맞춤형 대표 이미지 생성 중 (모델: {CONFIG['IMAGE_MODEL']}) ---")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
-        # 한국인 인물 중심, 텍스트 배제 고도화 프롬프트
+        # 제목과 요약본을 결합하여 컨텍스트가 풍부한 프롬프트 생성
         image_prompt = (
-            f"Generate a high-quality professional photography for a financial blog post thumbnail. "
+            f"A high-end, professional financial conceptual photography for a blog post. "
+            f"The article is titled '{title}' and discusses '{excerpt}'. "
             f"Subject: A middle-aged South Korean person or elderly couple with a warm, confident smile, "
-            f"looking financially secure in a clean, modern, sun-lit Korean home environment. "
-            f"Theme: Reliable retirement planning and financial security. "
-            f"Visual Style: Cinematic lighting, photorealistic, soft depth of field, 16:9 aspect ratio. "
-            f"CRITICAL RULE: DO NOT INCLUDE ANY TEXT, LETTERS, OR CHARACTERS in the image."
+            f"looking relaxed and financially secure in a clean, modern, sun-drenched Korean home environment. "
+            f"Visual elements: Modern banking interior or home office, soft cinematic lighting, trustworthy blue and warm beige tones. "
+            f"Style: Photorealistic, shallow depth of field, 16:9 aspect ratio. "
+            f"CRITICAL RULE: DO NOT INCLUDE ANY TEXT, LETTERS, WORDS, OR NUMBERS in the image. Focus only on the mood of financial stability."
         )
         
-        # Imagen 모델 페이로드 구조 (instances/parameters)
         payload = {
             "instances": {"prompt": image_prompt},
             "parameters": {"sampleCount": 1}
@@ -153,7 +153,6 @@ class WordPressAutoPoster:
         try:
             res = self.session.post(url, json=payload, timeout=120)
             if res.status_code == 200:
-                # Imagen 모델은 predictions[0].bytesBase64Encoded 에서 데이터를 가져옵니다.
                 result_json = res.json()
                 if 'predictions' in result_json and len(result_json['predictions']) > 0:
                     return result_json['predictions'][0]['bytesBase64Encoded']
@@ -295,13 +294,13 @@ class WordPressAutoPoster:
         post_data = self.generate_content(news)
         tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
         
-        # 이미지 생성 및 JPG 압축 업로드 (imagen-4.0-generate-001 로직 적용)
+        # 제목과 요약본을 참조하여 대표 이미지 생성 (JPG 70%)
         image_base64 = self.generate_image(post_data['title'], post_data['excerpt'])
         media_id = self.process_and_upload_image(image_base64, f"nps_thumb_{int(time.time())}.jpg")
         
         if self.publish(post_data, media_id, tag_ids):
             print(f"🎉 성공: {post_data['title']}")
-            if media_id: print(f"🖼️ 대표 이미지(JPG 70%) 등록 완료 (ID: {media_id})")
+            if media_id: print(f"🖼️ 대표 이미지(압축 JPG) 등록 완료 (ID: {media_id})")
         else:
             sys.exit(1)
 
