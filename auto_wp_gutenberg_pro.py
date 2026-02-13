@@ -61,7 +61,6 @@ class WordPressAutoPoster:
         tag_ids = []
         for name in tag_names:
             try:
-                # 1. 태그 존재 확인
                 search_url = f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags?search={name}"
                 res = requests.get(search_url, headers=self.headers)
                 existing = res.json()
@@ -70,7 +69,6 @@ class WordPressAutoPoster:
                 if match:
                     tag_ids.append(match['id'])
                 else:
-                    # 2. 없으면 생성
                     create_res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags", 
                                              headers=self.headers, json={"name": name})
                     if create_res.status_code == 201:
@@ -141,7 +139,7 @@ class WordPressAutoPoster:
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "temperature": 0.8,
-                "maxOutputTokens": 8192,
+                "maxOutputTokens": 8192, # 충분한 출력량을 확보하여 본문 잘림 방지
                 "responseSchema": {
                     "type": "OBJECT",
                     "properties": {
@@ -155,26 +153,51 @@ class WordPressAutoPoster:
             }
         }
         try:
-            res = requests.post(url, json=payload, timeout=180)
+            res = requests.post(url, json=payload, timeout=300)
             if res.status_code == 200:
-                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-        except: pass
+                result_json = res.json()
+                if 'candidates' in result_json:
+                    return json.loads(result_json['candidates'][0]['content']['parts'][0]['text'])
+            else:
+                print(f"❌ AI 호출 실패 ({res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"❌ AI 호출 중 오류 발생: {e}")
         return None
 
     def generate_post(self):
         print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 작업 시작 ---")
         news = self.search_naver_news()
-        link_instr = f"중간에 링크 삽입: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>" if self.external_link else ""
         
-        system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 칼럼을 작성하세요.
-        [중복 금지] 이미 다음 주제들로 글을 썼습니다: {self.recent_titles}. 이와 겹치지 않는 새로운 시각을 제시하세요.
-        [가이드] 인사말 없이 바로 본론 제목으로 시작하세요. 전문가의 냉철한 분석과 따뜻한 조언이 섞인 인간적인 문체로 작성하세요.
-        반드시 구텐베르크 블록 마커(heading, paragraph, list)를 사용하고, 3000자 이상 장문으로 작성하세요.
-        국민연금공단(https://www.nps.or.kr) 링크를 포함하고, {link_instr}도 적절히 배치하세요.
-        FAQ 섹션을 필수로 포함하고 제목 끝에 연도 관련 문구를 자연스럽게 넣으세요."""
+        # 외부 링크 구성
+        link_instr = ""
+        if self.external_link:
+            link_instr = f"글의 맥락에 맞춰 다음 링크를 <a> 태그로 자연스럽게 한 번만 삽입하세요: {self.external_link['title']} ({self.external_link['url']})"
+        
+        system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
 
-        post_data = self.call_gemini(f"뉴스:\n{news}\n를 바탕으로 전문가 칼럼을 작성해줘.", system)
-        if not post_data: return
+[필수 요구사항]
+1. 분량: 3,000자 이상의 매우 상세한 정보글을 작성하세요. 절대 중간에 요약하거나 끊지 마세요.
+2. 페르소나: 단순히 정보를 나열하는 기계가 아니라, 독자의 미래를 진심으로 걱정하고 전문적인 대안을 제시하는 전문가의 어조(전문성 + 인간미)를 유지하세요.
+3. 중복 방지: 이미 다음 주제들로 글을 썼습니다: {self.recent_titles}. 이와 절대 겹치지 않는 새로운 시각이나 니치한 정보를 다루세요.
+4. 구조: 반드시 구텐베르크 블록 마커(<!-- wp:heading -->, <!-- wp:paragraph -->, <!-- wp:list -->)를 사용하여 워드프레스 편집기에서 완벽하게 보이도록 하세요.
+5. 구성 요소:
+   - 전문가적 시각이 담긴 서론
+   - h2, h3 소제목을 활용한 체계적인 본론 (수치와 구체적 사례 포함)
+   - {link_instr}
+   - 국민연금공단(https://www.nps.or.kr) 링크 포함
+   - 마지막에 상세한 FAQ 섹션 (3개 이상의 질문과 답변)
+   - 전문가 제언이 담긴 결론
+
+[주의사항]
+- 인사말('안녕하십니까' 등) 없이 바로 제목과 본문으로 시작하세요.
+- 제목 끝에 연도 관련 문구(예: 2026년 최신 가이드)를 자연스럽게 포함하세요.
+- 마크다운 기호(#, **)를 쓰지 말고 오직 HTML과 블록 마커만 사용하세요."""
+
+        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 바탕으로 당신의 전문 지식을 동원해 독창적이고 풍부한 칼럼을 작성해줘.", system)
+        
+        if not post_data or not post_data.get('content') or len(post_data['content']) < 500:
+            print("❌ 본문이 생성되지 않았거나 내용이 너무 짧습니다. 발행을 중단합니다.")
+            return
 
         # 태그 ID 처리
         tag_ids = self.get_or_create_tag_ids(post_data.get('tags', ''))
@@ -183,6 +206,7 @@ class WordPressAutoPoster:
         img_id = self.upload_media(self.generate_image(post_data['title']))
 
         # 최종 발행
+        print("🚀 워드프레스 최종 발행 시도 중...")
         payload = {
             "title": post_data['title'],
             "content": post_data['content'],
@@ -191,11 +215,13 @@ class WordPressAutoPoster:
             "featured_media": img_id if img_id else 0,
             "tags": tag_ids
         }
-        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload)
+        
+        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload, timeout=60)
         if res.status_code == 201:
             print(f"🎉 발행 성공: {post_data['title']}")
+            print(f"🔗 링크: {res.json().get('link')}")
         else:
-            print(f"❌ 실패: {res.text}")
+            print(f"❌ 워드프레스 발행 실패 ({res.status_code}): {res.text}")
 
 if __name__ == "__main__":
     WordPressAutoPoster().generate_post()
