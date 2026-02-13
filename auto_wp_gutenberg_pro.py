@@ -60,7 +60,7 @@ class WordPressAutoPoster:
     def search_naver_news(self):
         queries = ["국민연금 수령액 증대", "2026 연금개혁안 세부내용", "기초연금 피부양자 탈락", "퇴직연금 IRP 수익률", "조기노령연금 단점"]
         query = random.choice(queries)
-        url = "https://openapi.naver.com/v1/search/news.json"
+        url = "[https://openapi.naver.com/v1/search/news.json](https://openapi.naver.com/v1/search/news.json)"
         headers = {"X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"], "X-Naver-Client-Secret": CONFIG["NAVER_CLIENT_SECRET"]}
         params = {"query": query, "display": 12, "sort": "sim"}
         try:
@@ -72,7 +72,7 @@ class WordPressAutoPoster:
 
     def generate_image(self, title, excerpt):
         print(f"🎨 이미지 생성 중 (노년 타겟팅): {title}")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
+        url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         image_prompt = (
             f"A high-end cinematic lifestyle photography for a Korean finance blog. "
             f"Subject: A happy South Korean elderly couple in their 70s, looking content and financially secure "
@@ -102,56 +102,55 @@ class WordPressAutoPoster:
         return res.json().get('id') if res.status_code == 201 else None
 
     def clean_content(self, content):
-        """본문 내 중복 내용 및 AI 불순물 완벽 제거"""
+        """본문 내 구텐베르크 구조를 보존하며 중복 내용 및 AI 불순물 제거"""
         if not content: return ""
         
-        # 1. AI 주석 및 가짜 마커 제거 (//paragraph, //heading 등)
+        # 1. 마크다운 기호 제거 (AI가 실수로 포함한 경우)
+        content = content.replace('```html', '').replace('```', '')
+
+        # 2. AI 주석 및 가짜 마커 제거 (//paragraph, //heading 등)
         content = re.sub(r'//[a-zA-Z가-힣]+', '', content)
         content = re.sub(r'\[NO CONTENT FOUND\]', '', content, flags=re.IGNORECASE)
         
-        # 2. 끊겨 있는 리스트 블록 병합
+        # 3. 끊겨 있는 리스트 블록 병합
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
-        # 3. 문단 단위 지문 중복 제거
-        blocks = re.split(r'(<!-- wp:[^>]+-->)', content)
+        # 4. 블록 단위 지문 중복 제거 (블록 구조 파괴 방지)
+        # 구텐베르크 블록 단위로 쪼개기
+        blocks = re.split(r'(<!-- /?wp:[^>]+-->)', content)
         seen_fingerprints = set()
-        refined_blocks = []
+        refined_output = []
         
-        for i in range(0, len(blocks)):
-            block = blocks[i]
-            # 텍스트만 추출하여 중복 검사 (제목은 보존, 문단만 검사)
-            if "wp:paragraph" in block:
-                text_only = re.sub(r'<[^>]+>', '', block).strip()
-                # 30자 이상의 문단에 대해서만 중복 검사 수행
-                if len(text_only) > 30:
-                    fingerprint = re.sub(r'[^가-힣]', '', text_only)[:40]
-                    if fingerprint in seen_fingerprints: continue
-                    seen_fingerprints.add(fingerprint)
-            refined_blocks.append(block)
+        for i in range(len(blocks)):
+            segment = blocks[i]
+            # 블록 마커는 그대로 유지
+            if segment.startswith('<!-- wp:') or segment.startswith('<!-- /wp:'):
+                refined_output.append(segment)
+                continue
             
-        final_content = "".join(refined_blocks).strip()
-        
-        # 4. 동일 문장 반복 제거 (문장 단위 클리닝)
-        sentences = final_content.split('. ')
-        unique_sentences = []
-        sentence_fingerprints = set()
-        for s in sentences:
-            s_clean = re.sub(r'[^가-힣]', '', s)
-            if len(s_clean) > 20: # 짧은 문장은 제외
-                if s_clean in sentence_fingerprints: continue
-                sentence_fingerprints.add(s_clean)
-            unique_sentences.append(s)
-        
-        return ". ".join(unique_sentences)
+            # 실제 텍스트 내용 부분만 중복 검사
+            text_only = re.sub(r'<[^>]+>', '', segment).strip()
+            if len(text_only) > 40:
+                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:50]
+                if fingerprint in seen_fingerprints:
+                    # 중복된 내용이 발견되면, 이전에 추가된 직전 블록 마커(wp:paragraph 등)도 같이 취소해야 함
+                    if refined_output and refined_output[-1].startswith('<!-- wp:'):
+                        refined_output.pop()
+                    continue
+                seen_fingerprints.add(fingerprint)
+            
+            refined_output.append(segment)
+            
+        return "".join(refined_output).strip()
 
     def call_gemini(self, prompt, system_instruction):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
+        url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.8, # 다양성을 위해 약간 높임
+                "temperature": 0.8,
                 "maxOutputTokens": 8192,
                 "responseSchema": {
                     "type": "OBJECT",
@@ -173,35 +172,39 @@ class WordPressAutoPoster:
         return None
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 롱테일 정보성 칼럼 생성 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 구텐베르크 기반 전문가 칼럼 생성 ---")
         news = self.search_naver_news()
         
         link_instr = f"본문 중간에 자연스럽게 링크 삽입: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>" if self.external_link else ""
         
         system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 독자들에게 실질적인 도움을 주는 롱테일 칼럼을 작성하세요.
 
-[필수 요구사항 - 중복 금지]
-1. 절대 반복 금지: 서론, 본론의 각 섹션, FAQ, 결론에서 동일한 문장이나 유사한 의미의 단락을 반복하지 마세요. 
-2. 정보 밀도: 3,000자 이상을 채우기 위해 같은 말을 되풀이하지 말고, 매 섹션마다 '새로운 데이터', '구체적인 사례', '실전 팁'을 추가하세요.
-3. 페르소나: 노년층 독자들에게 신뢰를 주는 따뜻하고 전문적인 어조를 유지하세요. 
-4. 금지 표식: 본문에 //paragraph, //heading, [NO CONTENT]와 같은 코멘트를 절대 넣지 마세요.
-5. 중복 방지: 최근 제목들 {self.recent_titles}와 다른 새로운 주제를 다루세요.
+[필수: 구텐베르크 블록 표준 준수]
+1. 모든 단락은 반드시 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 형식을 사용하세요.
+2. 제목은 <!-- wp:heading {{"level":2}} --><h2>제목</h2><!-- /wp:heading --> 형식을 사용하세요.
+3. 리스트는 <!-- wp:list --><ul><li>항목</li></ul><!-- /wp:list --> 형식을 사용하세요.
+4. 절대 //paragraph와 같은 주석이나 마크다운(#, **) 기호를 사용하지 마세요. 오직 표준 구텐베르크 HTML 주석 블록만 허용합니다.
+
+[내용 가이드라인]
+1. 절대 반복 금지: 각 섹션마다 새로운 정보와 구체적인 사례를 담으세요. 3,000자 이상의 충분한 분량을 확보하되 같은 말을 되풀이하지 마세요.
+2. 페르소나: 노년층 독자들에게 신뢰를 주는 따뜻하고 전문적인 어조를 유지하세요. 
+3. 중복 방지: 최근 제목들 {self.recent_titles}와 다른 새로운 주제를 다루세요.
 
 [구성 요소]
 - 강력한 인사이트를 담은 서론
-- h2, h3 블록을 활용한 5개 이상의 상세 분석 섹션
+- 5개 이상의 상세 분석 섹션 (h2, h3 활용)
 - {link_instr}
-- 국민연금공단(https://www.nps.or.kr) 공식 링크
-- 3개 이상의 새로운 질문이 포함된 FAQ
+- 국민연금공단([https://www.nps.or.kr](https://www.nps.or.kr)) 공식 링크
+- 3개 이상의 상세한 FAQ
 - 전문가의 최종 제언이 담긴 결론"""
 
-        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 바탕으로 당신의 전문성을 담은 풍성한 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 바탕으로 당신의 전문성을 담은 풍성한 구텐베르크 블록 형태의 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content') or len(post_data['content']) < 500:
             print("❌ 본문 생성 실패")
             return
 
-        # 본문 정제 (단락/문장 중복 제거)
+        # 본문 정제 (구텐베르크 구조를 해치지 않으며 중복 제거)
         post_data['content'] = self.clean_content(post_data['content'])
 
         # 이미지 처리 (노년 타겟팅)
