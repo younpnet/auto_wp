@@ -28,7 +28,7 @@ CONFIG = {
     "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
     "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", ""),
     "TEXT_MODEL": "gemini-2.5-flash-preview-09-2025",
-    "IMAGE_MODEL": "gemini-2.5-flash-preview-09-2025" # 이미지 모델 변경
+    "IMAGE_MODEL": "imagen-4.0-generate-001" # 이미지 모델을 다시 imagen-4.0으로 변경
 }
 
 class WordPressAutoPoster:
@@ -129,13 +129,14 @@ class WordPressAutoPoster:
         return None
 
     def generate_image(self, title, excerpt):
-        """이미지 모델 업데이트: gemini-2.5-flash-preview-09-2025 전용 로직"""
+        """imagen-4.0-generate-001 모델 전용 이미지 생성 로직"""
         print(f"--- [Step 2.5] 대표 이미지 생성 중 (모델: {CONFIG['IMAGE_MODEL']}) ---")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
+        # Imagen 모델은 predict 엔드포인트를 사용합니다.
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
         # 한국인 인물 중심, 텍스트 배제 고도화 프롬프트
         image_prompt = (
-            f"Generate a high-quality professional photography for a blog post. "
+            f"Generate a high-quality professional photography for a financial blog post thumbnail. "
             f"Subject: A middle-aged South Korean person or elderly couple with a warm, confident smile, "
             f"looking financially secure in a clean, modern, sun-lit Korean home environment. "
             f"Theme: Reliable retirement planning and financial security. "
@@ -143,20 +144,19 @@ class WordPressAutoPoster:
             f"CRITICAL RULE: DO NOT INCLUDE ANY TEXT, LETTERS, OR CHARACTERS in the image."
         )
         
+        # Imagen 모델 페이로드 구조 (instances/parameters)
         payload = {
-            "contents": [{"parts": [{"text": image_prompt}]}],
-            "generationConfig": {
-                "responseModalities": ["IMAGE"]
-            }
+            "instances": {"prompt": image_prompt},
+            "parameters": {"sampleCount": 1}
         }
 
         try:
             res = self.session.post(url, json=payload, timeout=120)
             if res.status_code == 200:
-                parts = res.json()['candidates'][0]['content']['parts']
-                image_part = next((p for p in parts if 'inlineData' in p), None)
-                if image_part:
-                    return image_part['inlineData']['data'] # base64 data
+                # Imagen 모델은 predictions[0].bytesBase64Encoded 에서 데이터를 가져옵니다.
+                result_json = res.json()
+                if 'predictions' in result_json and len(result_json['predictions']) > 0:
+                    return result_json['predictions'][0]['bytesBase64Encoded']
         except Exception as e:
             print(f"⚠️ 이미지 생성 실패: {e}")
         return None
@@ -295,7 +295,7 @@ class WordPressAutoPoster:
         post_data = self.generate_content(news)
         tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
         
-        # 이미지 생성 및 JPG 압축 업로드
+        # 이미지 생성 및 JPG 압축 업로드 (imagen-4.0-generate-001 로직 적용)
         image_base64 = self.generate_image(post_data['title'], post_data['excerpt'])
         media_id = self.process_and_upload_image(image_base64, f"nps_thumb_{int(time.time())}.jpg")
         
