@@ -38,7 +38,6 @@ class WordPressAutoPoster:
             "Authorization": f"Basic {self.auth}",
             "Content-Type": "application/json"
         }
-        # 외부 링크 로드
         self.external_link = self.load_external_link()
 
     def load_external_link(self):
@@ -58,23 +57,24 @@ class WordPressAutoPoster:
             "X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"],
             "X-Naver-Client-Secret": CONFIG["NAVER_CLIENT_SECRET"]
         }
-        params = {"query": query, "display": 10, "sort": "sim"}
+        params = {"query": query, "display": 12, "sort": "sim"}
         try:
-            res = requests.get(url, headers=headers, params=params)
+            res = requests.get(url, headers=headers, params=params, timeout=20)
             if res.status_code == 200:
-                return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}: {re.sub('<.*?>', '', i['description'])}" for i in res.json().get('items', [])])
-        except: return ""
+                items = res.json().get('items', [])
+                return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}: {re.sub('<.*?>', '', i['description'])}" for i in items])
+        except: return "최근 국민연금 주요 이슈 및 개혁안 분석"
         return ""
 
     def generate_image(self, title):
-        """본문 제목 기반 텍스트 없는 실사 이미지 생성"""
+        """본문 제목 기반 이미지 생성"""
         print(f"🎨 [이미지 생성 단계] 시도 중: {title}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
         prompt = (
-            f"A professional, high-quality, 4k cinematic photography for a financial blog featured image. "
-            f"Subject: A Korean couple or professional in a trustworthy financial setting related to '{title}'. "
-            f"Warm sunlight, clean modern office, shallow depth of field. "
+            f"A high-quality professional photography for a financial blog. "
+            f"Subject: A Korean person or elderly couple in a sun-drenched modern Korean living room, looking happy and secure about their future pension. "
+            f"Theme: {title}. Photorealistic, cinematic lighting, shallow depth of field. "
             f"Strictly NO TEXT, NO LETTERS, 16:9 aspect ratio."
         )
         
@@ -84,24 +84,19 @@ class WordPressAutoPoster:
         }
         
         try:
-            res = requests.post(url, json=payload, timeout=90)
+            res = requests.post(url, json=payload, timeout=100)
             if res.status_code == 200:
                 result = res.json()
                 if 'predictions' in result and len(result['predictions']) > 0:
-                    print("✅ 이미지 데이터 생성 완료")
                     return result['predictions'][0]['bytesBase64Encoded']
-                else:
-                    print(f"⚠️ API 응답에 이미지 데이터가 없습니다: {result}")
             else:
-                print(f"❌ Imagen API 오류 ({res.status_code}): {res.text}")
-        except Exception as e:
-            print(f"❌ 이미지 생성 중 예외 발생: {e}")
+                print(f"❌ 이미지 생성 API 오류 ({res.status_code})")
+        except: pass
         return None
 
-    def process_and_upload_media(self, img_b64, title):
-        """이미지를 처리하여 워드프레스에 업로드"""
-        if not img_b64:
-            return None
+    def process_and_upload_media(self, img_b64):
+        """이미지를 JPG 70% 압축 후 워드프레스 업로드 (500 에러 방지 최적화)"""
+        if not img_b64: return None
             
         print("📤 [미디어 업로드 단계] 워드프레스 전송 중...")
         raw_data = base64.b64decode(img_b64)
@@ -109,46 +104,39 @@ class WordPressAutoPoster:
         if PIL_AVAILABLE:
             try:
                 img = Image.open(io.BytesIO(raw_data))
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
+                if img.mode != 'RGB': img = img.convert('RGB')
                 out = io.BytesIO()
                 img.save(out, format="JPEG", quality=70, optimize=True)
                 upload_data = out.getvalue()
-                mime_type = "image/jpeg"
-                extension = "jpg"
-                print("⚡ JPG 70% 압축 완료")
-            except Exception as e:
-                print(f"⚠️ 이미지 변환 실패, 원본 업로드 시도: {e}")
-                upload_data = raw_data
-                mime_type = "image/png"
-                extension = "png"
+                mime_type, ext = "image/jpeg", "jpg"
+            except:
+                upload_data, mime_type, ext = raw_data, "image/png", "png"
         else:
-            upload_data = raw_data
-            mime_type = "image/png"
-            extension = "png"
+            upload_data, mime_type, ext = raw_data, "image/png", "png"
 
-        filename = f"thumb_{int(time.time())}.{extension}"
+        # 파일명을 아주 단순하게 만들어 서버측 이동 오류(500) 최소화
+        filename = f"nps_{int(time.time())}.{ext}"
+        
         media_headers = {
             "Authorization": f"Basic {self.auth}",
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": f'attachment; filename={filename}',
             "Content-Type": mime_type
         }
         
         try:
-            upload_res = requests.post(
+            res = requests.post(
                 f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", 
                 headers=media_headers, 
                 data=upload_data, 
                 timeout=60
             )
-            if upload_res.status_code == 201:
-                media_id = upload_res.json().get('id')
-                print(f"✅ 미디어 등록 성공! ID: {media_id}")
-                return media_id
+            if res.status_code == 201:
+                mid = res.json().get('id')
+                print(f"✅ 미디어 등록 성공 (ID: {mid})")
+                return mid
             else:
-                print(f"❌ 미디어 업로드 실패 ({upload_res.status_code}): {upload_res.text}")
-        except Exception as e:
-            print(f"❌ 미디어 업로드 중 예외 발생: {e}")
+                print(f"❌ 미디어 업로드 실패 ({res.status_code}): {res.text}")
+        except: pass
         return None
 
     def call_gemini(self, prompt, system_instruction):
@@ -163,59 +151,76 @@ class WordPressAutoPoster:
                     "properties": {
                         "title": {"type": "string"},
                         "content": {"type": "string"},
-                        "excerpt": {"type": "string"},
-                        "tags": {"type": "string"}
+                        "excerpt": {"type": "string"}
                     },
-                    "required": ["title", "content", "excerpt", "tags"]
+                    "required": ["title", "content", "excerpt"]
                 }
             }
         }
         try:
-            res = requests.post(url, json=payload, timeout=120)
+            res = requests.post(url, json=payload, timeout=180)
             if res.status_code == 200:
                 return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
         except: pass
         return None
 
+    def clean_content(self, content):
+        """본문 중복 제거 및 리스트 블록 병합 로직"""
+        # 1. 리스트 블록 병합: </ul>...<ul> 사이의 마커를 제거하여 하나의 리스트로 통합
+        content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
+        
+        # 2. 문단 단위 중복 제거 (지문 비교)
+        paragraphs = content.split('<!-- wp:')
+        unique_blocks = []
+        seen_fingerprints = set()
+        
+        for block in paragraphs:
+            if not block.strip(): continue
+            # 텍스트만 추출하여 지문 생성
+            text_only = re.sub(r'<[^>]+>', '', block).strip()
+            if len(text_only) > 10:
+                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:30] # 한글 위주 지문
+                if fingerprint in seen_fingerprints:
+                    continue
+                seen_fingerprints.add(fingerprint)
+            unique_blocks.append('<!-- wp:' + block)
+            
+        return "".join(unique_blocks)
+
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 작업 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 국민연금 자동 포스팅 시작 ---")
+        news = self.search_naver_news("국민연금 전략 2026")
         
-        # 1. 소재 찾기
-        news = self.search_naver_news("국민연금 혜택")
-        
-        # 2. 본문 기획
         link_instr = ""
         if self.external_link:
-            link_instr = f"본문 중간에 다음 링크를 자연스럽게 한 번 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
+            link_instr = f"본문 중간(2~3번째 단락 사이)에 다음 링크를 자연스럽게 한 번 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
 
-        system = f"""대한민국 금융 전문가로서 2026년 2월 기준의 전문 칼럼을 작성하세요.
-        - 인사말/자기소개 절대 금지.
-        - 구텐베르크 블록 마커(<!-- wp:paragraph --> 등)를 사용하여 워드프레스 편집기 최적화.
-        - [중요] 리스트 작성 시 여러 항목을 하나의 <!-- wp:list --><ul>...</ul><!-- /wp:list --> 블록 안에 묶어서 작성하세요. 항목마다 블록을 새로 만들지 마세요.
-        - 국민연금공단(https://www.nps.or.kr) 링크 포함.
+        system = f"""당신은 대한민국 최고의 금융 전문가입니다. 2026년 2월 시점의 전문적이고 유익한 롱테일 가이드를 3,000자 이상 작성하세요.
+        - 인사말 및 자기소개('안녕하십니까', '자산관리사입니다' 등)는 절대 하지 마세요.
+        - 반드시 구텐베르크 블록 마커(<!-- wp:heading -->, <!-- wp:paragraph -->, <!-- wp:list -->)를 사용하여 구조화하세요.
+        - [중요] 리스트 작성 시 모든 항목을 단 하나의 <!-- wp:list --><ul> 블록 내부에 <li>로 나열하세요.
+        - 제목(h2, h3)을 생략하지 말고 논리적으로 배치하세요.
+        - 국민연금공단(https://www.nps.or.kr) 링크를 포함하세요.
         - {link_instr}
-        - 3,000자 이상의 충분한 분량."""
+        - 마크다운 기호 없이 순수 HTML과 블록 마커만 사용하세요."""
 
-        # 3. 텍스트 생성
-        post_data = self.call_gemini(f"뉴스 참고:\n{news}\n\n위 내용을 기반으로 한 롱테일 정보성 가이드 작성.", system)
+        post_data = self.call_gemini(f"참고 데이터:\n{news}\n\n위 내용을 활용해 독자의 고민을 해결하는 상세한 롱테일 정보글을 작성해줘.", system)
         if not post_data:
             print("❌ 본문 생성 실패")
             return
 
-        # 4. 리스트 블록 병합 로직 (잘못 생성된 중복 태그 정화)
-        content = post_data['content']
-        # </ul><!-- /wp:list --><!-- wp:list --><ul> 패턴을 제거하여 인접한 리스트를 하나로 합침
-        content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
+        # 본문 정제 (중복 제거 및 리스트 병합)
+        refined_content = self.clean_content(post_data['content'])
 
-        # 5. 이미지 생성 및 업로드
+        # 이미지 생성 및 업로드
         img_b64 = self.generate_image(post_data['title'])
-        media_id = self.process_and_upload_media(img_b64, post_data['title'])
+        media_id = self.process_and_upload_media(img_b64)
 
-        # 6. 최종 발행
+        # 최종 발행
         print("🚀 워드프레스 최종 발행 시도 중...")
         payload = {
             "title": post_data['title'],
-            "content": content,
+            "content": refined_content,
             "excerpt": post_data['excerpt'],
             "status": "publish",
             "featured_media": int(media_id) if media_id else 0
