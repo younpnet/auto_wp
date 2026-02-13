@@ -21,7 +21,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests
+          # 개별 설치 대신 requirements.txt 파일을 참조하여 설치하도록 수정
+          pip install -r requirements.txt
 
       - name: Run auto poster
         env:
@@ -31,4 +32,5 @@ jobs:
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+        # 실행 파일명이 auto_wp_gutenberg_pro.py인지 확인하세요.
         run: python auto_wp_gutenberg_pro.py
