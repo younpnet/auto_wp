@@ -4,9 +4,8 @@ import time
 import base64
 import re
 import os
-import random
-import sys
 import io
+import random
 from datetime import datetime
 
 # 이미지 처리를 위한 PIL 라이브러리 (JPG 변환 및 압축용)
@@ -15,294 +14,151 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다. 'pip install Pillow'가 필요합니다.")
+    print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다.")
 
 # ==============================================================================
-# 환경 변수 설정 (Github Secrets)
+# 환경 변수 설정
 # ==============================================================================
 CONFIG = {
     "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
-    "WP_URL": os.environ.get("WP_URL", ""),
+    "WP_URL": os.environ.get("WP_URL", "").rstrip("/"),
     "WP_USERNAME": os.environ.get("WP_USERNAME", "admin"),
     "WP_APP_PASSWORD": os.environ.get("WP_APP_PASSWORD", ""),
-    "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
-    "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", ""),
     "TEXT_MODEL": "gemini-2.5-flash-preview-09-2025",
-    "IMAGE_MODEL": "imagen-4.0-generate-001" # 이미지 생성 최적화 모델
+    "IMAGE_MODEL": "imagen-4.0-generate-001",
+    "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
+    "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", "")
 }
 
 class WordPressAutoPoster:
     def __init__(self):
-        print("--- [Step 0] 시스템 환경 및 인증 점검 ---")
-        for key in ["WP_URL", "WP_APP_PASSWORD", "GEMINI_API_KEY"]:
-            if not CONFIG[key]:
-                print(f"❌ 오류: '{key}' 환경 변수가 설정되지 않았습니다.")
-                sys.exit(1)
-            
-        self.base_url = CONFIG["WP_URL"].rstrip("/")
-        self.session = requests.Session()
         user_pass = f"{CONFIG['WP_USERNAME']}:{CONFIG['WP_APP_PASSWORD']}"
-        self.auth_header = base64.b64encode(user_pass.encode()).decode()
-        
-        self.common_headers = {
-            "Authorization": f"Basic {self.auth_header}",
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        self.auth = base64.b64encode(user_pass.encode()).decode()
+        self.headers = {
+            "Authorization": f"Basic {self.auth}",
+            "Content-Type": "application/json"
         }
-        
-        # 최근 글 제목 30개 및 외부 링크 로드
-        self.recent_titles = self.fetch_recent_post_titles(30)
-        self.external_link = self.load_external_link_from_json()
+        # 외부 링크 및 최근 제목 로드
+        self.external_link = self.load_external_link()
 
-    def fetch_recent_post_titles(self, count=30):
-        url = f"{self.base_url}/wp-json/wp/v2/posts"
-        params = {"per_page": count, "status": "publish", "_fields": "title"}
+    def load_external_link(self):
+        """links.json에서 무작위 링크 1개를 가져옵니다."""
         try:
-            res = self.session.get(url, headers=self.common_headers, params=params, timeout=20)
-            if res.status_code == 200:
-                return [re.sub('<.*?>', '', post['title']['rendered']) for post in res.json()]
+            if os.path.exists('links.json'):
+                with open('links.json', 'r', encoding='utf-8') as f:
+                    links = json.load(f)
+                    if links:
+                        return random.choice(links)
         except: pass
-        return []
-
-    def load_external_link_from_json(self):
-        """제공된 JSON 형식(title, url)에서 무작위 링크 1개를 가져옵니다."""
-        try:
-            with open('links.json', 'r', encoding='utf-8') as f:
-                links = json.load(f)
-                if links:
-                    chosen = random.choice(links)
-                    print(f"✅ 외부 링크 로드 완료: {chosen.get('title')}")
-                    return chosen
-        except Exception as e:
-            print(f"⚠️ links.json 로드 실패: {e}")
         return None
 
-    def get_or_create_tags(self, tag_names_str):
-        if not tag_names_str: return []
-        tag_names = [t.strip() for t in tag_names_str.split(',') if t.strip()]
-        tag_ids = []
-        for name in tag_names:
-            try:
-                res = self.session.get(f"{self.base_url}/wp-json/wp/v2/tags?search={name}", headers=self.common_headers)
-                tags = res.json()
-                match = next((t for t in tags if t['name'].lower() == name.lower()), None)
-                if match:
-                    tag_ids.append(match['id'])
-                else:
-                    create_res = self.session.post(f"{self.base_url}/wp-json/wp/v2/tags", headers=self.common_headers, json={"name": name})
-                    if create_res.status_code == 201: tag_ids.append(create_res.json()['id'])
-            except: continue
-        return tag_ids
-
-    def search_naver_news(self, query="국민연금 개혁 전략"):
+    def search_naver_news(self, query="국민연금"):
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"],
             "X-Naver-Client-Secret": CONFIG["NAVER_CLIENT_SECRET"]
         }
-        params = {"query": query, "display": 15, "sort": "sim"}
+        params = {"query": query, "display": 10, "sort": "sim"}
         try:
-            res = self.session.get(url, headers=headers, params=params, timeout=15)
+            res = requests.get(url, headers=headers, params=params)
             if res.status_code == 200:
-                items = res.json().get('items', [])
-                return [{"title": re.sub('<.*?>', '', i['title']), "desc": re.sub('<.*?>', '', i['description'])} for i in items]
-        except: return []
-        return []
+                return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}: {re.sub('<.*?>', '', i['description'])}" for i in res.json().get('items', [])])
+        except: return ""
+        return ""
 
-    def call_gemini_text(self, prompt, system_instruction, schema=None):
+    def generate_image(self, title):
+        """본문 제목 기반 텍스트 없는 실사 이미지 생성"""
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
+        prompt = f"A professional high-quality financial blog header image about '{title}'. Featuring a clean modern office, warm cinematic lighting, Korean people in a reliable retirement setting. NO TEXT, 16:9 aspect ratio."
+        payload = {"instances": {"prompt": prompt}, "parameters": {"sampleCount": 1}}
+        try:
+            res = requests.post(url, json=payload, timeout=90)
+            if res.status_code == 200:
+                return res.json()['predictions'][0]['bytesBase64Encoded']
+        except: return None
+        return None
+
+    def process_and_upload_media(self, img_b64, title):
+        """이미지를 JPG 70% 품질로 압축하여 업로드"""
+        if not img_b64: return None
+        raw_data = base64.b64decode(img_b64)
+        
+        if PIL_AVAILABLE:
+            img = Image.open(io.BytesIO(raw_data))
+            if img.mode != 'RGB': img = img.convert('RGB')
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=70, optimize=True)
+            upload_data = out.getvalue()
+        else:
+            upload_data = raw_data
+
+        headers = {
+            "Authorization": f"Basic {self.auth}",
+            "Content-Disposition": f'attachment; filename="thumb_{int(time.time())}.jpg"',
+            "Content-Type": "image/jpeg"
+        }
+        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=headers, data=upload_data)
+        return res.json().get('id') if res.status_code == 201 else None
+
+    def call_gemini(self, prompt, system_instruction):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.8,
-                "responseSchema": schema
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "excerpt": {"type": "string"},
+                        "tags": {"type": "string"}
+                    },
+                    "required": ["title", "content", "excerpt", "tags"]
+                }
             }
         }
-        for i in range(3):
-            try:
-                res = self.session.post(url, json=payload, timeout=180)
-                if res.status_code == 200:
-                    return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-            except: pass
-            time.sleep(5)
-        return None
-
-    def generate_image(self, title, excerpt):
-        """본문 내용과 제목을 참조하여 텍스트 없는 고도화 이미지 생성"""
-        print(f"--- [Step 2.5] 본문 맞춤형 대표 이미지 생성 중 (모델: {CONFIG['IMAGE_MODEL']}) ---")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
-        
-        # 제목과 요약본을 결합하여 컨텍스트가 풍부한 프롬프트 생성
-        image_prompt = (
-            f"A high-end, professional financial conceptual photography for a blog post. "
-            f"The article is titled '{title}' and discusses '{excerpt}'. "
-            f"Subject: A middle-aged South Korean person or elderly couple with a warm, confident smile, "
-            f"looking relaxed and financially secure in a clean, modern, sun-drenched Korean home environment. "
-            f"Visual elements: Modern banking interior or home office, soft cinematic lighting, trustworthy blue and warm beige tones. "
-            f"Style: Photorealistic, shallow depth of field, 16:9 aspect ratio. "
-            f"CRITICAL RULE: DO NOT INCLUDE ANY TEXT, LETTERS, WORDS, OR NUMBERS in the image. Focus only on the mood of financial stability."
-        )
-        
-        payload = {
-            "instances": {"prompt": image_prompt},
-            "parameters": {"sampleCount": 1}
-        }
-
         try:
-            res = self.session.post(url, json=payload, timeout=120)
+            res = requests.post(url, json=payload, timeout=120)
             if res.status_code == 200:
-                result_json = res.json()
-                if 'predictions' in result_json and len(result_json['predictions']) > 0:
-                    return result_json['predictions'][0]['bytesBase64Encoded']
-        except Exception as e:
-            print(f"⚠️ 이미지 생성 실패: {e}")
+                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
+        except: return None
         return None
 
-    def process_and_upload_image(self, image_base64, filename="featured_image.jpg"):
-        """생성된 이미지를 JPG 70% 품질로 변환 및 압축 후 업로드"""
-        if not image_base64: return None
+    def generate_post(self):
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 작업 시작")
+        news = self.search_naver_news("국민연금 개혁 전략")
         
-        raw_data = base64.b64decode(image_base64)
-        
-        if PIL_AVAILABLE:
-            try:
-                img = Image.open(io.BytesIO(raw_data))
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                
-                output = io.BytesIO()
-                img.save(output, format="JPEG", quality=70, optimize=True)
-                processed_data = output.getvalue()
-                print("✅ 이미지 JPG 변환 및 70% 압축 완료")
-            except Exception as e:
-                print(f"⚠️ 이미지 처리 오류: {e}")
-                processed_data = raw_data
-        else:
-            processed_data = raw_data
-
-        url = f"{self.base_url}/wp-json/wp/v2/media"
-        headers = {
-            "Authorization": f"Basic {self.auth_header}",
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Type": "image/jpeg"
-        }
-
-        try:
-            res = self.session.post(url, headers=headers, data=processed_data, timeout=60)
-            if res.status_code == 201:
-                return res.json().get('id')
-        except: pass
-        return None
-
-    def generate_content(self, news_items):
-        print("--- [Step 2] 롱테일 키워드 기반 정보성 콘텐츠 기획 ---")
-        news_context = "\n".join([f"- {n['title']}: {n['desc']}" for n in news_items])
-        
-        link_instruction = ""
+        link_instr = ""
         if self.external_link:
-            link_instruction = (
-                f"또한, 글의 맥락상 가장 적절한 위치에 아래 외부 링크를 자연스럽게 한 번만 삽입하세요.\n"
-                f"삽입 형식: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
-            )
+            link_instr = f"본문 중간에 다음 링크를 자연스럽게 한 번 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
 
-        system_instruction = (
-            f"당신은 대한민국 최고의 금융 전문가이자 SEO 전문가입니다. 현재 시점은 2026년 2월입니다.\n"
-            f"[기존 발행글 제목] {self.recent_titles}\n\n"
-            f"[지침]\n"
-            f"1. 롱테일 키워드 전략: 독자가 실제로 검색할 법한 틈새 주제를 선정하세요.\n"
-            f"2. 인사말 금지: '안녕하십니까' 등의 자기소개 없이 바로 본론 제목과 핵심 내용으로 시작하세요.\n"
-            f"3. 분량: 3,000자 이상의 매우 상세하고 유용한 가이드 글을 작성하세요.\n"
-            f"4. 링크 삽입: 국민연금공단 공식 홈페이지 링크(https://www.nps.or.kr)를 포함하고,\n"
-            f"{link_instruction}\n"
-            f"5. 태그(tags): 콤마(,)로 구분된 3~5개의 핵심 키워드로 작성하세요."
-        )
+        system = f"""대한민국 금융 전문가로서 2026년 2월 기준 3,000자 이상의 롱테일 정보글을 작성하세요.
+        - 인사말 및 자기소개 금지. 
+        - 구텐베르크 블록 마커(<!-- wp:paragraph --> 등)를 사용해 구조화하세요.
+        - 국민연금공단(https://www.nps.or.kr) 링크를 반드시 포함하세요.
+        - {link_instr}
+        - 마크다운 기호 없이 순수 HTML/블록 마커만 사용하세요."""
 
-        schema = {
-            "type": "OBJECT",
-            "properties": {
-                "title": {"type": "string"},
-                "focus_keyphrase": {"type": "string"},
-                "tags": {"type": "string"},
-                "excerpt": {"type": "string"},
-                "blocks": {
-                    "type": "ARRAY",
-                    "items": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "type": {"type": "string", "enum": ["h2", "h3", "p", "list"]},
-                            "content": {"type": "string"}
-                        },
-                        "required": ["type", "content"]
-                    }
-                }
-            },
-            "required": ["title", "focus_keyphrase", "blocks", "tags", "excerpt"]
-        }
-        
-        prompt = f"참고 뉴스({news_context})를 기반으로 독자의 고민을 해결하는 고품질 롱테일 SEO 최적화 글을 작성해줘."
-        data = self.call_gemini_text(prompt, system_instruction, schema)
-        
-        if not data: sys.exit(1)
-        
-        assembled = ""
-        seen_para = set()
-        for i, b in enumerate(data['blocks']):
-            content = b['content'].strip()
-            if i == 0 and b['type'] == "p" and any(x in content for x in ["안녕", "안녕하십니까", "자산관리사"]): continue
+        post_data = self.call_gemini(f"참고 뉴스:\n{news}\n\n위 데이터를 활용해 롱테일 가이드를 작성해줘.", system)
+        if not post_data: return
 
-            fingerprint = re.sub(r'[^가-힣]', '', content)[:40]
-            if b['type'] == "p" and (fingerprint in seen_para or len(fingerprint) < 10): continue
-            seen_para.add(fingerprint)
+        # 이미지 생성 및 업로드
+        img_b64 = self.generate_image(post_data['title'])
+        media_id = self.process_and_upload_media(img_b64, post_data['title'])
 
-            if b['type'] == "h2":
-                assembled += f"<!-- wp:heading {{\"level\":2}} -->\n<h2>{content}</h2>\n<!-- /wp:heading -->\n\n"
-            elif b['type'] == "h3":
-                assembled += f"<!-- wp:heading {{\"level\":3}} -->\n<h3>{content}</h3>\n<!-- /wp:heading -->\n\n"
-            elif b['type'] == "p":
-                if "국민연금공단" in content and "href" not in content:
-                    content = content.replace("국민연금공단", "<a href='https://www.nps.or.kr' target='_self'><strong>국민연금공단</strong></a>", 1)
-                assembled += f"<!-- wp:paragraph -->\n<p>{content}</p>\n<!-- /wp:paragraph -->\n\n"
-            elif b['type'] == "list":
-                content = re.sub(r'([둘셋넷다섯]째|마지막으로),', r'\n\1,', content)
-                items = [item.strip() for item in content.split('\n') if item.strip()]
-                lis = "".join([f"<li>{item}</li>" for item in items])
-                assembled += f"<!-- wp:list -->\n<ul>{lis}</ul>\n<!-- /wp:list -->\n\n"
-
-        data['assembled_content'] = assembled
-        return data
-
-    def publish(self, data, media_id=None, tag_ids=None):
-        print("--- [Step 3] 워드프레스 발행 중... ---")
+        # 워드프레스 발행
         payload = {
-            "title": data['title'],
-            "content": data['assembled_content'],
-            "excerpt": data['excerpt'],
+            "title": post_data['title'],
+            "content": post_data['content'],
+            "excerpt": post_data['excerpt'],
             "status": "publish",
-            "featured_media": media_id if media_id else 0,
-            "tags": tag_ids if tag_ids else [],
-            "meta": {"_yoast_wpseo_focuskw": data.get('focus_keyphrase', '')}
+            "featured_media": media_id if media_id else 0
         }
-        res = self.session.post(f"{self.base_url}/wp-json/wp/v2/posts", headers=self.common_headers, json=payload, timeout=60)
-        return res.status_code == 201
-
-    def run(self):
-        news = self.search_naver_news("국민연금 혜택 전략")
-        if not news: sys.exit(1)
-        
-        post_data = self.generate_content(news)
-        tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
-        
-        # 제목과 요약본을 참조하여 대표 이미지 생성 (JPG 70%)
-        image_base64 = self.generate_image(post_data['title'], post_data['excerpt'])
-        media_id = self.process_and_upload_image(image_base64, f"nps_thumb_{int(time.time())}.jpg")
-        
-        if self.publish(post_data, media_id, tag_ids):
+        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload)
+        if res.status_code == 201:
             print(f"🎉 성공: {post_data['title']}")
-            if media_id: print(f"🖼️ 대표 이미지(압축 JPG) 등록 완료 (ID: {media_id})")
-        else:
-            sys.exit(1)
 
 if __name__ == "__main__":
-    WordPressAutoPoster().run()
+    WordPressAutoPoster().generate_post()
