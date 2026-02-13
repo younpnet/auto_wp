@@ -72,7 +72,7 @@ class WordPressAutoPoster:
         
         prompt = (
             f"A high-end professional lifestyle photography for a South Korean finance blog. "
-            f"Subject: A Korean couple or person in a sun-drenched modern Korean living room, looking happy and secure about their future. "
+            f"Subject: A Korean couple or professional in a sun-drenched modern Korean living room, looking happy and secure about their future. "
             f"Context: {title}. Realistic, cinematic lighting, shallow depth of field. "
             f"Strictly NO TEXT, NO LETTERS, NO NUMBERS, 16:9 aspect ratio."
         )
@@ -120,25 +120,12 @@ class WordPressAutoPoster:
             ext = "png"
             mime_type = "image/png"
 
-        # 파일명을 아주 단순하게 만들어 서버측 경로 이동 오류 방지
         filename = f"thumb_{int(time.time())}.{ext}"
-        
-        # multipart/form-data 방식으로 전송
-        files = {
-            'file': (filename, upload_data, mime_type)
-        }
-        
-        headers = {
-            "Authorization": f"Basic {self.auth}"
-        }
+        files = {'file': (filename, upload_data, mime_type)}
+        headers = {"Authorization": f"Basic {self.auth}"}
         
         try:
-            res = requests.post(
-                f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", 
-                headers=headers, 
-                files=files,
-                timeout=60
-            )
+            res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=headers, files=files, timeout=60)
             if res.status_code == 201:
                 mid = res.json().get('id')
                 print(f"✅ 미디어 등록 성공 (ID: {mid})")
@@ -170,12 +157,23 @@ class WordPressAutoPoster:
         try:
             res = requests.post(url, json=payload, timeout=180)
             if res.status_code == 200:
-                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-        except: pass
+                # JSON 파싱 실패를 대비한 예외 처리 추가
+                try:
+                    data = json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
+                    if not data.get('content'):
+                        print("⚠️ 경고: AI가 본문을 생성하지 않았습니다.")
+                    return data
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f"❌ JSON 파싱 에러: {e}")
+            else:
+                print(f"❌ API 요청 실패 ({res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"❌ 텍스트 생성 중 예외 발생: {e}")
         return None
 
     def clean_content(self, content):
         """본문 중복 제거 및 리스트 블록 안전 병합"""
+        if not content: return ""
         # 1. 리스트 블록 병합
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
@@ -204,33 +202,36 @@ class WordPressAutoPoster:
         return "".join(refined_blocks)
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 국민연금 자동 포스팅 시작 ---")
-        news = self.search_naver_news("국민연금 전략 2026")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 국민연금 전문가 칼럼 생성 시작 ---")
+        news = self.search_naver_news("국민연금 개혁 전략")
         
         link_instr = ""
         if self.external_link:
-            link_instr = f"본문 중간에 다음 링크를 자연스럽게 한 번 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
+            link_instr = f"본문 중간에 자연스럽게 다음 링크를 앵커 텍스트 형식으로 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
 
-        system = f"""당신은 대한민국 최고의 금융 전문가이자 SEO 전문가입니다. 2026년 2월 시점의 전문적이고 유익한 롱테일 가이드(3,000자 이상)를 작성하세요.
-        
-        [제목 가이드라인]
-        - 제목의 처음에 '2026년' 혹은 '2월'을 절대 배치하지 마세요. 
-        - 독자의 호기심을 자극하는 핵심 키워드로 제목을 시작하세요. 
-        - 연도 및 최신 정보 강조는 제목의 맨 뒤에 '(2026년 최신 가이드)' 혹은 '(2026 최신판)'과 같은 형태로 덧붙이세요.
-        - 예시: '남편/아내 사망 시 국민연금 유족연금 100% 받는 법: 재혼, 이혼 조건 정리 (2026년 최신 가이드)'
-        
-        [본문 규칙]
-        - 인사말 및 자기소개는 절대 하지 마세요.
-        - 반드시 구텐베르크 블록 마커(heading, paragraph, list)를 사용하여 구조화하세요.
-        - [중요] 리스트 작성 시 모든 항목을 단 하나의 <!-- wp:list --><ul> 블록 내부에 담으세요.
-        - 제목(h2, h3)을 생략하지 말고 논리적으로 배치하세요.
-        - 국민연금공단(https://www.nps.or.kr) 링크를 포함하세요.
+        system = f"""당신은 대한민국 최고의 노후 자산 관리 전문가이자 금융 칼럼니스트입니다. 
+        독자들에게 단순히 정보를 나열하는 것이 아니라, 전문가의 통찰력과 진정성이 느껴지는 롱테일 가이드(3,000자 이상)를 작성하세요.
+
+        [제목 전략]
+        - 제목 맨 앞에 '2026년'이나 '2월'을 기계적으로 붙이지 마세요.
+        - 독자의 절실한 고민을 건드리는 핵심 키워드로 제목을 시작하고, 신뢰도를 높이기 위해 제목 끝에 '(2026년 업데이트)', '[2026 최신 기준]', '(올해 바뀌는 핵심 가이드)' 등을 자연스럽게 배치하세요.
+        - 예: '매달 30만원 더 받는 국민연금 수령액 증대 전략: 추납과 반납의 실전 수익률 분석 [2026 최신 가이드]'
+
+        [본문 작성 가이드라인 - 사람이 쓴 것처럼]
+        - 인사말('안녕하십니까' 등)은 절대 하지 마세요. 바로 강렬한 화두로 본론을 시작하세요.
+        - 전문가적 시각: "단순히 얼마를 받느냐보다 중요한 것은 세금과 건보료의 역습입니다"와 같은 깊이 있는 조언을 포함하세요.
+        - 문체: 기계적인 설명조가 아닌, 친절하지만 단호한 전문가의 조언을 담은 문체를 사용하세요.
+        - 구조화: 반드시 구텐베르크 블록 마커(heading, paragraph, list, table)를 사용하여 웹 환경에 최적화하세요.
+        - 중복 금지: 앞에서 언급한 수치나 설명을 뒤에서 다시 반복하지 마세요.
         - {link_instr}
-        - 마크다운 기호 없이 순수 HTML과 블록 마커만 사용하세요."""
+        - 국민연금공단(https://www.nps.or.kr) 공식 홈페이지를 출처로 언급하며 링크하세요.
 
-        post_data = self.call_gemini(f"참고 데이터:\n{news}\n\n위 내용을 활용해 독자의 고민을 해결하는 상세한 롱테일 정보글을 작성해줘.", system)
-        if not post_data:
-            print("❌ 본문 생성 실패")
+        [데이터 구조]
+        JSON 객체(title, content, excerpt)로 응답하며, content 필드 내부에 모든 구텐베르크 HTML을 포함해야 합니다. 본문이 누락되지 않도록 끝까지 완성하세요."""
+
+        post_data = self.call_gemini(f"최신 뉴스 소스:\n{news}\n\n위 데이터를 기반으로 실생활에 밀접한 전문가 칼럼을 작성해줘.", system)
+        if not post_data or not post_data.get('content'):
+            print("❌ 본문 데이터 생성 실패로 작업을 중단합니다.")
             return
 
         refined_content = self.clean_content(post_data['content'])
