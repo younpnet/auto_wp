@@ -143,6 +143,8 @@ class WordPressAutoPoster:
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
+                "temperature": 0.7,
+                "maxOutputTokens": 8192,  # 충분한 토큰을 할당하여 장문이 잘리지 않도록 함
                 "responseSchema": {
                     "type": "OBJECT",
                     "properties": {
@@ -157,11 +159,10 @@ class WordPressAutoPoster:
         try:
             res = requests.post(url, json=payload, timeout=180)
             if res.status_code == 200:
-                # JSON 파싱 실패를 대비한 예외 처리 추가
                 try:
                     data = json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-                    if not data.get('content'):
-                        print("⚠️ 경고: AI가 본문을 생성하지 않았습니다.")
+                    if not data.get('content') or len(data['content']) < 500:
+                        print("⚠️ 경고: AI가 본문을 너무 짧게 생성했거나 생성하지 않았습니다.")
                     return data
                 except (json.JSONDecodeError, KeyError) as e:
                     print(f"❌ JSON 파싱 에러: {e}")
@@ -214,22 +215,26 @@ class WordPressAutoPoster:
 
         [제목 전략]
         - 제목 맨 앞에 '2026년'이나 '2월'을 기계적으로 붙이지 마세요.
-        - 독자의 절실한 고민을 건드리는 핵심 키워드로 제목을 시작하고, 신뢰도를 높이기 위해 제목 끝에 '(2026년 업데이트)', '[2026 최신 기준]', '(올해 바뀌는 핵심 가이드)' 등을 자연스럽게 배치하세요.
-        - 예: '매달 30만원 더 받는 국민연금 수령액 증대 전략: 추납과 반납의 실전 수익률 분석 [2026 최신 가이드]'
+        - 독자의 절실한 고민을 건드리는 핵심 키워드로 제목을 시작하고, 제목 끝에 '(2026년 업데이트)', '[2026 최신 기준]' 등 신뢰도 높은 문구를 자연스럽게 배치하세요.
 
-        [본문 작성 가이드라인 - 사람이 쓴 것처럼]
+        [본문 필수 구성 - 절대 생략 금지]
+        1. 서론: 현재의 연금 개혁 트렌드와 독자가 직면한 문제 제기.
+        2. 본론: 최소 4개 이상의 h2 소제목 섹션. 구체적인 수치와 법적 근거 제시.
+        3. 전문가 제언: 독자의 지갑을 지킬 수 있는 실질적인 Action Plan 조언.
+        4. 자주 묻는 질문(FAQ): 반드시 <!-- wp:heading {{"level":2}} --><h2>자주 묻는 질문(FAQ)</h2> 블록을 만들고 3개 이상의 질문과 답변을 상세히 작성하세요.
+        5. 결론: 노후 준비에 대한 격려와 마무리 인사.
+
+        [본문 작성 원칙]
         - 인사말('안녕하십니까' 등)은 절대 하지 마세요. 바로 강렬한 화두로 본론을 시작하세요.
-        - 전문가적 시각: "단순히 얼마를 받느냐보다 중요한 것은 세금과 건보료의 역습입니다"와 같은 깊이 있는 조언을 포함하세요.
-        - 문체: 기계적인 설명조가 아닌, 친절하지만 단호한 전문가의 조언을 담은 문체를 사용하세요.
         - 구조화: 반드시 구텐베르크 블록 마커(heading, paragraph, list, table)를 사용하여 웹 환경에 최적화하세요.
-        - 중복 금지: 앞에서 언급한 수치나 설명을 뒤에서 다시 반복하지 마세요.
+        - 3,000자 이상의 풍부한 정보량을 제공하며, 절대 요약하거나 중간에 내용을 자르지 마세요.
         - {link_instr}
         - 국민연금공단(https://www.nps.or.kr) 공식 홈페이지를 출처로 언급하며 링크하세요.
 
         [데이터 구조]
-        JSON 객체(title, content, excerpt)로 응답하며, content 필드 내부에 모든 구텐베르크 HTML을 포함해야 합니다. 본문이 누락되지 않도록 끝까지 완성하세요."""
+        JSON 객체(title, content, excerpt)로 응답하세요. content 필드 내부에 모든 구텐베르크 HTML을 포함해야 합니다."""
 
-        post_data = self.call_gemini(f"최신 뉴스 소스:\n{news}\n\n위 데이터를 기반으로 실생활에 밀접한 전문가 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"최신 뉴스 소스:\n{news}\n\n위 데이터를 기반으로 실생활에 밀접하고 정보량이 방대한 전문가 칼럼을 작성해줘. FAQ 섹션은 필수로 포함해.", system)
         if not post_data or not post_data.get('content'):
             print("❌ 본문 데이터 생성 실패로 작업을 중단합니다.")
             return
