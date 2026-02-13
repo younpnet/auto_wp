@@ -60,7 +60,8 @@ class WordPressAutoPoster:
     def search_naver_news(self):
         queries = ["국민연금 수령액 증대", "2026 연금개혁안 세부내용", "기초연금 피부양자 탈락", "퇴직연금 IRP 수익률", "조기노령연금 단점"]
         query = random.choice(queries)
-        url = "[https://openapi.naver.com/v1/search/news.json](https://openapi.naver.com/v1/search/news.json)"
+        # URL 마크다운 기호 제거
+        url = "https://openapi.naver.com/v1/search/news.json"
         headers = {"X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"], "X-Naver-Client-Secret": CONFIG["NAVER_CLIENT_SECRET"]}
         params = {"query": query, "display": 12, "sort": "sim"}
         try:
@@ -72,7 +73,8 @@ class WordPressAutoPoster:
 
     def generate_image(self, title, excerpt):
         print(f"🎨 이미지 생성 중 (노년 타겟팅): {title}")
-        url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
+        # URL 마크다운 기호 제거
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         image_prompt = (
             f"A high-end cinematic lifestyle photography for a Korean finance blog. "
             f"Subject: A happy South Korean elderly couple in their 70s, looking content and financially secure "
@@ -97,6 +99,7 @@ class WordPressAutoPoster:
                 img.save(out, format="JPEG", quality=70, optimize=True)
                 raw_data = out.getvalue()
             except: pass
+        # multipart/form-data 방식으로 전송하여 500 에러 방지
         files = {'file': (f"nps_{int(time.time())}.jpg", raw_data, "image/jpeg")}
         res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=self.headers, files=files, timeout=60)
         return res.json().get('id') if res.status_code == 201 else None
@@ -105,7 +108,7 @@ class WordPressAutoPoster:
         """본문 내 구텐베르크 구조를 보존하며 중복 내용 및 AI 불순물 제거"""
         if not content: return ""
         
-        # 1. 마크다운 기호 제거 (AI가 실수로 포함한 경우)
+        # 1. 마크다운 기호 제거
         content = content.replace('```html', '').replace('```', '')
 
         # 2. AI 주석 및 가짜 마커 제거 (//paragraph, //heading 등)
@@ -115,25 +118,21 @@ class WordPressAutoPoster:
         # 3. 끊겨 있는 리스트 블록 병합
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
-        # 4. 블록 단위 지문 중복 제거 (블록 구조 파괴 방지)
-        # 구텐베르크 블록 단위로 쪼개기
+        # 4. 블록 단위 중복 제거
         blocks = re.split(r'(<!-- /?wp:[^>]+-->)', content)
         seen_fingerprints = set()
         refined_output = []
         
         for i in range(len(blocks)):
             segment = blocks[i]
-            # 블록 마커는 그대로 유지
             if segment.startswith('<!-- wp:') or segment.startswith('<!-- /wp:'):
                 refined_output.append(segment)
                 continue
             
-            # 실제 텍스트 내용 부분만 중복 검사
             text_only = re.sub(r'<[^>]+>', '', segment).strip()
             if len(text_only) > 40:
                 fingerprint = re.sub(r'[^가-힣]', '', text_only)[:50]
                 if fingerprint in seen_fingerprints:
-                    # 중복된 내용이 발견되면, 이전에 추가된 직전 블록 마커(wp:paragraph 등)도 같이 취소해야 함
                     if refined_output and refined_output[-1].startswith('<!-- wp:'):
                         refined_output.pop()
                     continue
@@ -144,7 +143,8 @@ class WordPressAutoPoster:
         return "".join(refined_output).strip()
 
     def call_gemini(self, prompt, system_instruction):
-        url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
+        # URL 마크다운 기호 제거
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
@@ -167,8 +167,16 @@ class WordPressAutoPoster:
         try:
             res = requests.post(url, json=payload, timeout=300)
             if res.status_code == 200:
-                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-        except: pass
+                result = res.json()
+                if 'candidates' in result and result['candidates']:
+                    text_content = result['candidates'][0]['content']['parts'][0]['text']
+                    return json.loads(text_content)
+                else:
+                    print("❌ AI 응답에 후보 데이터가 없습니다.")
+            else:
+                print(f"❌ API 요청 실패 (상태 코드: {res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"❌ 텍스트 생성 중 오류 발생: {e}")
         return None
 
     def generate_post(self):
@@ -183,10 +191,10 @@ class WordPressAutoPoster:
 1. 모든 단락은 반드시 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 형식을 사용하세요.
 2. 제목은 <!-- wp:heading {{"level":2}} --><h2>제목</h2><!-- /wp:heading --> 형식을 사용하세요.
 3. 리스트는 <!-- wp:list --><ul><li>항목</li></ul><!-- /wp:list --> 형식을 사용하세요.
-4. 절대 //paragraph와 같은 주석이나 마크다운(#, **) 기호를 사용하지 마세요. 오직 표준 구텐베르크 HTML 주석 블록만 허용합니다.
+4. 마크다운 기호(#, **)를 사용하지 마세요. 오직 표준 구텐베르크 HTML 주석 블록만 허용합니다.
 
 [내용 가이드라인]
-1. 절대 반복 금지: 각 섹션마다 새로운 정보와 구체적인 사례를 담으세요. 3,000자 이상의 충분한 분량을 확보하되 같은 말을 되풀이하지 마세요.
+1. 절대 반복 금지: 각 섹션마다 새로운 정보와 구체적인 사례를 담으세요. 3,000자 이상의 충분한 분량을 확보하세요.
 2. 페르소나: 노년층 독자들에게 신뢰를 주는 따뜻하고 전문적인 어조를 유지하세요. 
 3. 중복 방지: 최근 제목들 {self.recent_titles}와 다른 새로운 주제를 다루세요.
 
@@ -194,7 +202,7 @@ class WordPressAutoPoster:
 - 강력한 인사이트를 담은 서론
 - 5개 이상의 상세 분석 섹션 (h2, h3 활용)
 - {link_instr}
-- 국민연금공단([https://www.nps.or.kr](https://www.nps.or.kr)) 공식 링크
+- 국민연금공단(https://www.nps.or.kr) 공식 링크
 - 3개 이상의 상세한 FAQ
 - 전문가의 최종 제언이 담긴 결론"""
 
@@ -204,20 +212,31 @@ class WordPressAutoPoster:
             print("❌ 본문 생성 실패")
             return
 
-        # 본문 정제 (구텐베르크 구조를 해치지 않으며 중복 제거)
+        # 본문 정제
         post_data['content'] = self.clean_content(post_data['content'])
 
         # 이미지 처리 (노년 타겟팅)
         img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
 
         # 최종 발행
+        tag_ids = []
+        if post_data.get('tags'):
+            for name in post_data['tags'].split(','):
+                try:
+                    t_res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags", headers=self.headers, json={"name": name.strip()}, timeout=10)
+                    if t_res.status_code in [200, 201]: tag_ids.append(t_res.json()['id'])
+                    elif t_res.status_code == 400: # 이미 존재하는 태그인 경우 조회
+                        s_res = requests.get(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags?search={name.strip()}", headers=self.headers, timeout=10)
+                        if s_res.status_code == 200 and s_res.json(): tag_ids.append(s_res.json()[0]['id'])
+                except: continue
+
         payload = {
             "title": post_data['title'],
             "content": post_data['content'],
             "excerpt": post_data['excerpt'],
             "status": "publish",
             "featured_media": img_id if img_id else 0,
-            "tags": [t['id'] for t in [requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags", headers=self.headers, json={"name": name.strip()}).json() for name in post_data.get('tags', '').split(',')] if 'id' in t]
+            "tags": tag_ids
         }
         
         res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload, timeout=60)
