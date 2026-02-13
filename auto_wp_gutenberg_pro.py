@@ -123,12 +123,11 @@ class WordPressAutoPoster:
         # 파일명을 아주 단순하게 만들어 서버측 경로 이동 오류 방지
         filename = f"thumb_{int(time.time())}.{ext}"
         
-        # multipart/form-data 방식으로 전송 (requests의 files 파라미터 사용)
+        # multipart/form-data 방식으로 전송
         files = {
             'file': (filename, upload_data, mime_type)
         }
         
-        # 헤더에서 Content-Type을 제거하여 requests가 boundary를 자동으로 설정하게 함
         headers = {
             "Authorization": f"Basic {self.auth}"
         }
@@ -177,14 +176,14 @@ class WordPressAutoPoster:
 
     def clean_content(self, content):
         """본문 중복 제거 및 리스트 블록 안전 병합"""
-        # 1. 리스트 블록 병합 (구조 보호를 위해 \s* 활용)
+        # 1. 리스트 블록 병합
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
-        # 2. 문단 단위 중복 제거 로직 개선 (제목/블록 마커 보존)
+        # 2. 문단 단위 중복 제거 로직 개선
         blocks = re.split(r'(<!-- wp:)', content)
         if len(blocks) < 2: return content
         
-        refined_blocks = [blocks[0]] # 초기 텍스트 보존
+        refined_blocks = [blocks[0]]
         seen_fingerprints = set()
         
         for i in range(1, len(blocks), 2):
@@ -192,7 +191,6 @@ class WordPressAutoPoster:
             block_body = blocks[i+1] if (i+1) < len(blocks) else ""
             full_block = block_marker + block_body
             
-            # 텍스트 내용 추출하여 중복 검사 (제목은 제외하고 문단만 검사)
             if "wp:paragraph" in block_marker:
                 text_only = re.sub(r'<[^>]+>', '', block_body).strip()
                 if len(text_only) > 15:
@@ -213,7 +211,15 @@ class WordPressAutoPoster:
         if self.external_link:
             link_instr = f"본문 중간에 다음 링크를 자연스럽게 한 번 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
 
-        system = f"""당신은 대한민국 최고의 금융 전문가입니다. 2026년 2월 시점의 전문적이고 유익한 롱테일 가이드(3,000자 이상)를 작성하세요.
+        system = f"""당신은 대한민국 최고의 금융 전문가이자 SEO 전문가입니다. 2026년 2월 시점의 전문적이고 유익한 롱테일 가이드(3,000자 이상)를 작성하세요.
+        
+        [제목 가이드라인]
+        - 제목의 처음에 '2026년' 혹은 '2월'을 절대 배치하지 마세요. 
+        - 독자의 호기심을 자극하는 핵심 키워드로 제목을 시작하세요. 
+        - 연도 및 최신 정보 강조는 제목의 맨 뒤에 '(2026년 최신 가이드)' 혹은 '(2026 최신판)'과 같은 형태로 덧붙이세요.
+        - 예시: '남편/아내 사망 시 국민연금 유족연금 100% 받는 법: 재혼, 이혼 조건 정리 (2026년 최신 가이드)'
+        
+        [본문 규칙]
         - 인사말 및 자기소개는 절대 하지 마세요.
         - 반드시 구텐베르크 블록 마커(heading, paragraph, list)를 사용하여 구조화하세요.
         - [중요] 리스트 작성 시 모든 항목을 단 하나의 <!-- wp:list --><ul> 블록 내부에 담으세요.
@@ -227,14 +233,11 @@ class WordPressAutoPoster:
             print("❌ 본문 생성 실패")
             return
 
-        # 본문 정제 (중복 제거 및 리스트 병합)
         refined_content = self.clean_content(post_data['content'])
 
-        # 이미지 생성 및 업로드
         img_b64 = self.generate_image(post_data['title'])
         media_id = self.process_and_upload_media(img_b64)
 
-        # 최종 발행
         print("🚀 워드프레스 최종 발행 시도 중...")
         payload = {
             "title": post_data['title'],
