@@ -35,8 +35,7 @@ class WordPressAutoPoster:
         user_pass = f"{CONFIG['WP_USERNAME']}:{CONFIG['WP_APP_PASSWORD']}"
         self.auth = base64.b64encode(user_pass.encode()).decode()
         self.headers = {
-            "Authorization": f"Basic {self.auth}",
-            "Content-Type": "application/json"
+            "Authorization": f"Basic {self.auth}"
         }
         self.external_link = self.load_external_link()
 
@@ -72,10 +71,10 @@ class WordPressAutoPoster:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
         prompt = (
-            f"A high-quality professional photography for a financial blog. "
-            f"Subject: A Korean person or elderly couple in a sun-drenched modern Korean living room, looking happy and secure about their future pension. "
-            f"Theme: {title}. Photorealistic, cinematic lighting, shallow depth of field. "
-            f"Strictly NO TEXT, NO LETTERS, 16:9 aspect ratio."
+            f"A high-end professional lifestyle photography for a South Korean finance blog. "
+            f"Subject: A Korean couple or person in a sun-drenched modern Korean living room, looking happy and secure about their future. "
+            f"Context: {title}. Realistic, cinematic lighting, shallow depth of field. "
+            f"Strictly NO TEXT, NO LETTERS, NO NUMBERS, 16:9 aspect ratio."
         )
         
         payload = {
@@ -90,12 +89,13 @@ class WordPressAutoPoster:
                 if 'predictions' in result and len(result['predictions']) > 0:
                     return result['predictions'][0]['bytesBase64Encoded']
             else:
-                print(f"❌ 이미지 생성 API 오류 ({res.status_code})")
-        except: pass
+                print(f"❌ 이미지 생성 API 오류 ({res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"❌ 이미지 생성 중 예외 발생: {e}")
         return None
 
     def process_and_upload_media(self, img_b64):
-        """이미지를 JPG 70% 압축 후 워드프레스 업로드 (500 에러 방지 최적화)"""
+        """이미지 업로드 (Multipart 방식으로 500 에러 해결 시도)"""
         if not img_b64: return None
             
         print("📤 [미디어 업로드 단계] 워드프레스 전송 중...")
@@ -108,26 +108,36 @@ class WordPressAutoPoster:
                 out = io.BytesIO()
                 img.save(out, format="JPEG", quality=70, optimize=True)
                 upload_data = out.getvalue()
-                mime_type, ext = "image/jpeg", "jpg"
+                ext = "jpg"
+                mime_type = "image/jpeg"
+                print("⚡ JPG 70% 압축 완료")
             except:
-                upload_data, mime_type, ext = raw_data, "image/png", "png"
+                upload_data = raw_data
+                ext = "png"
+                mime_type = "image/png"
         else:
-            upload_data, mime_type, ext = raw_data, "image/png", "png"
+            upload_data = raw_data
+            ext = "png"
+            mime_type = "image/png"
 
-        # 파일명을 아주 단순하게 만들어 서버측 이동 오류(500) 최소화
-        filename = f"nps_{int(time.time())}.{ext}"
+        # 파일명을 아주 단순하게 만들어 서버측 경로 이동 오류 방지
+        filename = f"thumb_{int(time.time())}.{ext}"
         
-        media_headers = {
-            "Authorization": f"Basic {self.auth}",
-            "Content-Disposition": f'attachment; filename={filename}',
-            "Content-Type": mime_type
+        # multipart/form-data 방식으로 전송 (requests의 files 파라미터 사용)
+        files = {
+            'file': (filename, upload_data, mime_type)
+        }
+        
+        # 헤더에서 Content-Type을 제거하여 requests가 boundary를 자동으로 설정하게 함
+        headers = {
+            "Authorization": f"Basic {self.auth}"
         }
         
         try:
             res = requests.post(
                 f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", 
-                headers=media_headers, 
-                data=upload_data, 
+                headers=headers, 
+                files=files,
                 timeout=60
             )
             if res.status_code == 201:
@@ -136,7 +146,8 @@ class WordPressAutoPoster:
                 return mid
             else:
                 print(f"❌ 미디어 업로드 실패 ({res.status_code}): {res.text}")
-        except: pass
+        except Exception as e:
+            print(f"❌ 미디어 업로드 중 예외 발생: {e}")
         return None
 
     def call_gemini(self, prompt, system_instruction):
@@ -165,27 +176,34 @@ class WordPressAutoPoster:
         return None
 
     def clean_content(self, content):
-        """본문 중복 제거 및 리스트 블록 병합 로직"""
-        # 1. 리스트 블록 병합: </ul>...<ul> 사이의 마커를 제거하여 하나의 리스트로 통합
+        """본문 중복 제거 및 리스트 블록 안전 병합"""
+        # 1. 리스트 블록 병합 (구조 보호를 위해 \s* 활용)
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
-        # 2. 문단 단위 중복 제거 (지문 비교)
-        paragraphs = content.split('<!-- wp:')
-        unique_blocks = []
+        # 2. 문단 단위 중복 제거 로직 개선 (제목/블록 마커 보존)
+        blocks = re.split(r'(<!-- wp:)', content)
+        if len(blocks) < 2: return content
+        
+        refined_blocks = [blocks[0]] # 초기 텍스트 보존
         seen_fingerprints = set()
         
-        for block in paragraphs:
-            if not block.strip(): continue
-            # 텍스트만 추출하여 지문 생성
-            text_only = re.sub(r'<[^>]+>', '', block).strip()
-            if len(text_only) > 10:
-                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:30] # 한글 위주 지문
-                if fingerprint in seen_fingerprints:
-                    continue
-                seen_fingerprints.add(fingerprint)
-            unique_blocks.append('<!-- wp:' + block)
+        for i in range(1, len(blocks), 2):
+            block_marker = blocks[i]
+            block_body = blocks[i+1] if (i+1) < len(blocks) else ""
+            full_block = block_marker + block_body
             
-        return "".join(unique_blocks)
+            # 텍스트 내용 추출하여 중복 검사 (제목은 제외하고 문단만 검사)
+            if "wp:paragraph" in block_marker:
+                text_only = re.sub(r'<[^>]+>', '', block_body).strip()
+                if len(text_only) > 15:
+                    fingerprint = re.sub(r'[^가-힣]', '', text_only)[:40]
+                    if fingerprint in seen_fingerprints:
+                        continue
+                    seen_fingerprints.add(fingerprint)
+            
+            refined_blocks.append(full_block)
+            
+        return "".join(refined_blocks)
 
     def generate_post(self):
         print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 국민연금 자동 포스팅 시작 ---")
@@ -193,12 +211,12 @@ class WordPressAutoPoster:
         
         link_instr = ""
         if self.external_link:
-            link_instr = f"본문 중간(2~3번째 단락 사이)에 다음 링크를 자연스럽게 한 번 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
+            link_instr = f"본문 중간에 다음 링크를 자연스럽게 한 번 포함하세요: <a href='{self.external_link['url']}' target='_self'><strong>{self.external_link['title']}</strong></a>"
 
-        system = f"""당신은 대한민국 최고의 금융 전문가입니다. 2026년 2월 시점의 전문적이고 유익한 롱테일 가이드를 3,000자 이상 작성하세요.
-        - 인사말 및 자기소개('안녕하십니까', '자산관리사입니다' 등)는 절대 하지 마세요.
-        - 반드시 구텐베르크 블록 마커(<!-- wp:heading -->, <!-- wp:paragraph -->, <!-- wp:list -->)를 사용하여 구조화하세요.
-        - [중요] 리스트 작성 시 모든 항목을 단 하나의 <!-- wp:list --><ul> 블록 내부에 <li>로 나열하세요.
+        system = f"""당신은 대한민국 최고의 금융 전문가입니다. 2026년 2월 시점의 전문적이고 유익한 롱테일 가이드(3,000자 이상)를 작성하세요.
+        - 인사말 및 자기소개는 절대 하지 마세요.
+        - 반드시 구텐베르크 블록 마커(heading, paragraph, list)를 사용하여 구조화하세요.
+        - [중요] 리스트 작성 시 모든 항목을 단 하나의 <!-- wp:list --><ul> 블록 내부에 담으세요.
         - 제목(h2, h3)을 생략하지 말고 논리적으로 배치하세요.
         - 국민연금공단(https://www.nps.or.kr) 링크를 포함하세요.
         - {link_instr}
@@ -226,7 +244,12 @@ class WordPressAutoPoster:
             "featured_media": int(media_id) if media_id else 0
         }
         
-        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=self.headers, json=payload, timeout=60)
+        headers = {
+            "Authorization": f"Basic {self.auth}",
+            "Content-Type": "application/json"
+        }
+        
+        res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers=headers, json=payload, timeout=60)
         if res.status_code == 201:
             print(f"🎉 최종 발행 성공: {res.json().get('link')}")
         else:
