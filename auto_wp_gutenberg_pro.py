@@ -129,12 +129,17 @@ class WordPressAutoPoster:
         return res.json().get('id') if res.status_code == 201 else None
 
     def clean_content(self, content):
+        """본문 내 구텐베르크 구조를 보존하며 중복 내용 및 AI 불순물 제거 (강력한 중복 필터링 추가)"""
         if not content: return ""
+        
+        # 1. AI 가짜 주석 제거 (//paragraph 등)
         content = re.sub(r'//[a-zA-Z가-힣]+', '', content)
-        content = re.sub(r'\[.*?\]', '', content)
+        # 2. 반복되는 마크다운 기호 및 비정상적인 코드 블록 제거
         content = content.replace('```html', '').replace('```', '')
+        # 3. 리스트 블록 병합
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
+        # 4. 블록 단위 중복 제거 및 무한 루프 텍스트 방어
         blocks = re.split(r'(<!-- wp:[^>]+-->)', content)
         seen_fingerprints = set()
         refined_output = []
@@ -145,17 +150,30 @@ class WordPressAutoPoster:
                 refined_output.append(segment)
                 continue
             
+            # 텍스트 내용 추출 (HTML 태그 제거)
             text_only = re.sub(r'<[^>]+>', '', segment).strip()
             if len(text_only) > 30:
-                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:60]
+                # 텍스트의 앞부분 지문을 사용하여 중복 여부 판단 (한글만 추출하여 비교)
+                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:80]
+                
+                # 지문이 이미 존재하거나, 같은 내용이 수백 번 반복되는 것을 막기 위해
+                # 현재 블록 내에서 너무 많은 동일 구절이 있는지 검사 (자체 루프 방어)
                 if fingerprint in seen_fingerprints:
+                    # 중복된 내용이 발견되면, 이전에 추가된 직전 블록 마커도 제거
                     if refined_output and refined_output[-1].startswith('<!-- wp:'):
                         refined_output.pop()
                     continue
                 seen_fingerprints.add(fingerprint)
+            
             refined_output.append(segment)
             
-        return "".join(refined_output).strip()
+        final_content = "".join(refined_output).strip()
+        
+        # 5. 최종 텍스트에서 동일한 문장이 연속적으로 3번 이상 나타나는 패턴 제거 (정규표현식)
+        # 10자 이상의 한글 문장 패턴이 반복되는 경우 하나만 남김
+        final_content = re.sub(r'(([가-힣\s\d,.\(\)]{10,})\s*)\2{2,}', r'\1', final_content)
+        
+        return final_content
 
     def call_gemini(self, prompt, system_instruction):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
@@ -164,7 +182,7 @@ class WordPressAutoPoster:
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.8,
+                "temperature": 0.7, # 창의성보다는 일관성을 위해 0.7로 하향 조정
                 "maxOutputTokens": 8192,
                 "responseSchema": {
                     "type": "OBJECT",
@@ -188,7 +206,7 @@ class WordPressAutoPoster:
         return None
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 링크 최적화 전문가 칼럼 생성 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 중복 방지 전문가 칼럼 생성 ---")
         news = self.search_naver_news()
         
         # 외부 링크 지침 (2개)
@@ -198,37 +216,41 @@ class WordPressAutoPoster:
             
         # 내부 링크 지침 (2개 선택)
         int_links = random.sample(self.internal_link_pool, min(len(self.internal_link_pool), 2))
-        int_link_instr = "또한, 관련 있는 주제로 작성된 아래의 내부 링크 2개를 글의 맥락에 맞게 삽입하여 독자의 체류 시간을 높이세요:\n"
+        int_link_instr = "또한, 아래의 내부 링크 2개를 글의 맥락에 맞게 삽입하세요:\n"
         for link in int_links:
             int_link_instr += f"- {link['title']}: {link['url']}\n"
         
-        system = f"""대한민국 최고의 금융 자산관리 전문가로서, 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
+        system = f"""대한민국 최고의 금융 자산관리 전문가로서 2026년 시점의 통찰력 있는 칼럼을 작성하세요.
+
+[⚠️ 중요: 절대 중복 금지 규칙]
+- 동일한 문장이나 단락을 복사하여 분량을 채우지 마세요. 반복 발견 시 검색 엔진 최적화 점수가 하락합니다.
+- 각 섹션(서론, 본론 1~6, FAQ, 결론)은 반드시 '서로 다른' 구체적인 정보와 시각을 담아야 합니다.
+- 3,000자 이상을 작성하되, '내용의 다양성'을 최우선으로 하세요. 
 
 [필수: 링크 삽입 규칙]
-1. 외부 링크 적용: {ext_link_instr}
-2. 내부 링크 적용: {int_link_instr}
-3. 출처 표기: 국민연금공단(https://www.nps.or.kr) 링크를 본문 하단에 '공식 출처'로 포함하세요.
-4. 모든 링크는 <a> 태그를 사용하며 반드시 target="_self" 속성을 포함해야 합니다.
+1. 외부 링크: {ext_link_instr}
+2. 내부 링크: {int_link_instr}
+3. 모든 링크는 <a> 태그를 사용하며 target="_self" 속성을 포함하세요.
 
 [필수: 모바일 가독성 및 태그 규칙]
 1. 모든 본론 텍스트는 반드시 <!-- wp:paragraph --><p>내용</p><!-- /wp:paragraph --> 블록으로 감싸야 합니다.
-2. 문단 길이 최적화: 한 문단(p 태그 하나)은 최대 2~3문장을 넘지 않게 짧게 끊어 모바일 가독성을 높이세요.
+2. 문단 최적화: 모바일 가독성을 위해 한 문단(p 태그 하나)은 최대 2문장을 넘지 않게 짧게 끊으세요.
 3. 소제목: <!-- wp:heading {{"level":2}} --><h2>...</h2><!-- /wp:heading --> 형식을 사용하며 최소 6개 이상의 H2 섹션을 구성하세요.
-4. 표(Table): 데이터 비교는 반드시 <!-- wp:table --> 블록을 사용하세요.
-5. 중복 금지: 이미 발행된 주제들({self.recent_titles})과 차별화된 새로운 시각을 제시하세요.
+4. 중복 방지: 이미 발행된 주제들({self.recent_titles})과 차별화된 새로운 시각을 제시하세요.
 
 [제목 및 구성]
-- 제목 끝에 (2026년 최신 가이드) 등의 문구를 자연스럽게 추가하세요.
-- 분량: 3,000자 이상의 풍부한 정보량을 확보하세요.
+- 제목 끝에 (2026년 최신 가이드) 등의 문구를 추가하세요.
 - FAQ: 4개 이상의 상세한 전문가 응답 FAQ 섹션을 포함하세요."""
 
-        post_data = self.call_gemini(f"참고 뉴스:\n{news}\n\n위 데이터를 활용해 외부 링크 2개와 내부 링크 2개가 완벽히 적용된 전문가 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"참고 뉴스:\n{news}\n\n위 데이터를 활용해 중복 없는 풍성한 전문가 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content'):
             print("❌ 생성 실패")
             return
 
+        # 본문 정제 (내용 중복 및 무한 루프 텍스트 필터링)
         post_data['content'] = self.clean_content(post_data['content'])
+        
         img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
         tag_ids = self.get_or_create_tag_ids(post_data.get('tags', ''))
 
