@@ -72,21 +72,32 @@ class WordPressAutoPoster:
             self.link_map[f"[[외부추천_{i}]]"] = link
 
     def inject_smart_links(self, content):
+        """본문의 마커를 분석하여 문맥에 맞게 앵커 또는 버튼으로 치환합니다."""
         for marker, info in self.link_map.items():
             url = info['url']
             title = info['title']
+            
+            # 워드프레스 버튼 블록 (광고/추천 스타일)
             button_html = (
-                f'<!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} -->'
-                f'<div class="wp-block-buttons"><!-- wp:button -->'
-                f'<div class="wp-block-button"><a class="wp-block-button__link" href="{url}" target="_self">{title}</a></div>'
-                f'<!-- /wp:button --></div><!-- /wp:buttons -->'
+                f'\n<!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} -->\n'
+                f'<div class="wp-block-buttons"><!-- wp:button -->\n'
+                f'<div class="wp-block-button"><a class="wp-block-button__link" href="{url}" target="_self">{title}</a></div>\n'
+                f'<!-- /wp:button --></div>\n<!-- /wp:buttons -->\n'
             )
+            
+            # 문장 내 앵커 태그
             anchor_html = f'<a href="{url}" target="_self"><strong>{title}</strong></a>'
-            standalone_pattern = rf'<!-- wp:paragraph -->\s*<p>\s*{re.escape(marker)}\s*</p>\s*<!-- /wp:paragraph -->'
-            if re.search(standalone_pattern, content):
-                content = re.sub(standalone_pattern, button_html, content)
+            
+            # 마커가 단독 문단으로 존재하는지 확인 (구텐베르크 태그 포함 유연하게 매칭)
+            standalone_regex = rf'(?:<!-- wp:paragraph -->\s*)?<p>\s*{re.escape(marker)}\s*</p>(?:\s*<!-- /wp:paragraph -->)?'
+            
+            if re.search(standalone_regex, content):
+                # 단독 줄에 마커가 있다면 버튼으로 치환
+                content = re.sub(standalone_regex, button_html, content)
             else:
+                # 문장 내부에 섞여 있다면 앵커 태그로 치환
                 content = content.replace(marker, anchor_html)
+                
         return content
 
     def clean_structure(self, content):
@@ -118,7 +129,6 @@ class WordPressAutoPoster:
         print(f"🎨 이미지 다변화 생성 중: {title}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
-        # 4가지 시나리오 중 무작위 선택하여 다양성 확보
         scenarios = [
             f"A warm, professional consultation scene: A South Korean financial advisor in a clean suit is explaining documents to an attentive elderly couple in a bright, modern office.",
             f"A content middle-aged South Korean man in his 50s, smiling confidently while looking at a tablet showing a retirement plan, sitting in a stylish Korean cafe.",
@@ -128,13 +138,11 @@ class WordPressAutoPoster:
         ]
         
         selected_scenario = random.choice(scenarios)
-        
         image_prompt = (
             f"High-end editorial photography for a finance blog. "
-            f"Concept: {selected_scenario} "
-            f"Article context: {title}. "
-            f"Visual Style: Photorealistic, cinematic warm lighting, high quality, soft textures, 16:9 aspect ratio. "
-            f"CRITICAL: NO TEXT, NO WORDS, NO LETTERS, NO NUMBERS in the image."
+            f"Concept: {selected_scenario} Article context: {title}. "
+            f"Visual Style: Photorealistic, cinematic warm lighting, high quality, 16:9 aspect ratio. "
+            f"CRITICAL: NO TEXT, NO WORDS, NO NUMBERS in the image."
         )
         
         payload = {"instances": [{"prompt": image_prompt}], "parameters": {"sampleCount": 1}}
@@ -146,15 +154,27 @@ class WordPressAutoPoster:
 
     def call_gemini(self, news):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
-        marker_list = "\n".join([f"- {k} (주제: {v['title']})" for k, v in self.link_map.items()])
-        system_instruction = f"""대한민국 최고의 금융 자산관리 전문가로서 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
-[⚠️ 중요: 링크 마커 사용 규칙]
-1. URL이나 <a> 태그를 직접 쓰지 말고 제공된 마커들({list(self.link_map.keys())})만 배치하세요.
-2. {marker_list}
-[⚠️ 필수: 구조]
-1. h2, h3 제목 블록 사용. 문단 가독성(4~6문장) 확보. 중복 금지. 연도는 제목 끝에 배치."""
+        
+        marker_desc = ""
+        for k, v in self.link_map.items():
+            marker_desc += f"- {k} (제목: {v['title']})\n"
+            
+        system_instruction = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
+
+[⚠️ 링크 마커 배치 전략 - 필수 규칙]
+1. 본문에 URL이나 <a> 태그를 직접 작성하지 말고 아래 제공된 마커들을 반드시 포함하세요:
+{marker_desc}
+2. 배치 기준:
+   - **문맥과 관련이 깊은 경우**: 문장 속에 마커를 단어처럼 넣으세요. (예: ...을 위해 [[외부추천_0]] 내용을 확인하세요.) -> 텍스트 링크로 변환됩니다.
+   - **내용과 직접 관련은 없지만 유익한 정보인 경우**: 단락과 단락 사이, 혹은 특정 섹션 끝에 마커만 한 줄로 따로 적으세요. (예: <p>[[외부추천_1]]</p>) -> 버튼으로 변환됩니다.
+
+[⚠️ 필수: 문서 구조]
+1. 모든 섹션은 구텐베르크 h2, h3 제목 블록으로 시작하세요.
+2. 문단 가독성: 한 문단(p 태그)은 4~6문장으로 풍부하게 구성하여 데스크탑/모바일 가독성을 모두 잡으세요.
+3. 중복 방지: 동일한 수치나 정보를 반복하지 마세요."""
+
         payload = {
-            "contents": [{"parts": [{"text": f"뉴스 데이터:\n{news}\n\n위 데이터를 기반으로 마커가 배치된 전문가 칼럼을 작성해줘."}]}],
+            "contents": [{"parts": [{"text": f"뉴스 데이터:\n{news}\n\n위 데이터를 기반으로 마커가 전략적으로 배치된 전문가 칼럼을 작성해줘."}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
@@ -206,14 +226,19 @@ class WordPressAutoPoster:
         return tag_ids
 
     def run(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 이미지 다변화 및 마커 주입 로직 실행 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 지능형 링크 배치 및 이미지 다변화 실행 ---")
         news = self.search_naver_news()
         post_data = self.call_gemini(news)
         if not post_data: return
+        
+        # 1. 본문 정제 및 마커 주입 (문맥 판별 치환)
         content = self.clean_structure(post_data['content'])
         content = self.inject_smart_links(content)
+        
+        # 2. 미디어 및 메타데이터 처리
         img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
         tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
+        
         payload = {
             "title": post_data['title'],
             "content": content,
