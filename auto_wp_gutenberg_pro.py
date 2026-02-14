@@ -126,10 +126,10 @@ class WordPressAutoPoster:
         return res.json().get('id') if res.status_code == 201 else None
 
     def clean_content(self, content):
-        """본문 내 중복 내용, 무한 반복, 불필요 주석을 완벽하게 제거하는 최종 클리닝 로직"""
+        """본문 내 중복 내용 및 AI 불순물을 완벽하게 제거하며 구조를 유지"""
         if not content: return ""
         
-        # 1. AI 주석 및 가짜 마커 제거 (//paragraph, //heading 등 공백 포함 처리)
+        # 1. AI 주석 및 가짜 마커 제거 (//paragraph 등)
         content = re.sub(r'//\s*[a-zA-Z가-힣]+', '', content)
         content = content.replace('```html', '').replace('```', '')
 
@@ -147,10 +147,9 @@ class WordPressAutoPoster:
                 refined_output.append(segment)
                 continue
             
-            # 한글만 추출하여 지문 생성 (의미적 중복 체크)
             text_only = re.sub(r'<[^>]+>', '', segment).strip()
             if len(text_only) > 15:
-                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:100] # 지문 길이 확장
+                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:100]
                 if fingerprint in seen_fingerprints:
                     if refined_output and refined_output[-1].startswith('<!-- wp:'):
                         refined_output.pop()
@@ -160,14 +159,12 @@ class WordPressAutoPoster:
             
         temp_content = "".join(refined_output).strip()
         
-        # 4. 동일 문장 패턴 반복 제거 (강력한 문장 수준 클리닝: 200번 반복 방어)
-        # 의미 있는 문장(15자 이상)이 문서 전체에서 반복되는지 검사
+        # 4. 동일 문장 패턴 반복 제거
         sentences = re.split(r'(?<=[.!?])\s+', temp_content)
         unique_sentences = []
         sentence_set = set()
         
         for s in sentences:
-            # 문장에서 한글만 추출하여 비교용 지문 생성
             s_clean = re.sub(r'[^가-힣]', '', s).strip()
             if len(s_clean) > 20:
                 if s_clean in sentence_set:
@@ -177,7 +174,7 @@ class WordPressAutoPoster:
             
         final_content = " ".join(unique_sentences)
         
-        # 5. 연속된 동일 구절 물리적 제거 (정규표현식)
+        # 5. 연속된 동일 구절 물리적 제거
         final_content = re.sub(r'(([가-힣\s\d,.\(\)]{10,})\s*)\2{2,}', r'\1', final_content)
         
         return final_content
@@ -189,7 +186,7 @@ class WordPressAutoPoster:
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.7, # 안정성을 위해 하향 조정
+                "temperature": 0.7,
                 "maxOutputTokens": 8192,
                 "responseSchema": {
                     "type": "OBJECT",
@@ -213,46 +210,52 @@ class WordPressAutoPoster:
         return None
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 반복 제거 및 가독성 고도화 생성 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 구조화 및 링크 최적화 생성 시작 ---")
         news = self.search_naver_news()
         
-        # 외부 링크 지침 (2개)
-        ext_link_instr = "[외부 링크 정보 (2개 모두 사용 필수)]\n"
+        # 외부 링크 지침 (추천 문구 배제)
+        ext_link_instr = "[외부 링크 정보]\n"
         for link in self.external_links:
             ext_link_instr += f"- 제목: {link['title']}, URL: {link['url']}\n"
             
-        # 내부 링크 지침 (2개)
+        # 내부 링크 지침
         int_links = random.sample(self.internal_link_pool, min(len(self.internal_link_pool), 2))
-        int_link_instr = "[내부 링크 정보 (2개 모두 사용 필수)]\n"
+        int_link_instr = "[내부 링크 정보]\n"
         for link in int_links:
             int_link_instr += f"- 제목: {link['title']}, URL: {link['url']}\n"
         
         system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
 
-[⚠️ 절대 엄수: 중복 및 마커 금지 규칙]
-1. 반복 금지: 동일한 문장, 단락, 조언을 절대 반복하지 마세요. 특히 서론과 결론이 비슷하지 않게 하세요. 200번 반복과 같은 루프 현상은 절대 용납되지 않습니다.
-2. 마커 금지: 본문에 //paragraph, //heading, //list 등 어떠한 슬래시(/) 기반의 코멘트나 주석을 넣지 마세요.
-3. 구텐베르크 표준: 오직 <!-- wp:paragraph --><p>...</p><!-- /wp:paragraph --> 형태의 순수 HTML 블록만 출력하세요.
+[⚠️ 필수: 문서 구조화 및 제목 블록 사용]
+1. 본문은 반드시 논리적 계층에 따라 제목 블록을 사용해야 합니다.
+   - 대주제: <!-- wp:heading {{"level":2}} --><h2>...</h2><!-- /wp:heading -->
+   - 소주제: <!-- wp:heading {{"level":3}} --><h3>...</h3><!-- /wp:heading -->
+   - 세부항목: <!-- wp:heading {{"level":4}} --><h4>...</h4><!-- /wp:heading -->
+2. 모든 섹션의 시작은 위 제목 블록으로 시작하세요. 타이틀이 빠지지 않도록 주의하세요.
 
-[필수: 가독성 및 링크 규칙]
-1. 문단 구성: 데스크탑과 모바일 모두를 고려하여 한 문단(p 태그)은 4~6문장의 적절한 길이로 구성하세요.
-2. 외부 링크(2개): {ext_link_instr}
-   - 내용과 관련 있으면 앵커 텍스트로, 관련 없으면 단락 사이에 버튼 블록 형식을 사용하여 '추천 광고' 느낌으로 배치하세요.
-3. 내부 링크(2개): {int_link_instr}
-   - 본문 맥락에 맞게 삽입하여 독자의 체류 시간을 높이세요.
-4. 모든 링크는 target="_self" 속성을 포함하세요.
+[필수: 링크 및 버튼 규칙]
+1. 외부 링크(2개): {ext_link_instr}
+   - [중요] 버튼 블록 사용 시 버튼 텍스트에 '추천링크', '광고', '클릭' 등의 부가적인 수식어를 절대 넣지 마세요. 오직 링크의 '제목'만 텍스트로 사용하세요.
+   - 버튼 블록 형식: <!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="URL" target="_self">제목</a></div><!-- /wp:button --></div><!-- /wp:buttons -->
+2. 내부 링크(2개): {int_link_instr}을 본문 맥락에 맞게 자연스럽게 배치하세요.
+3. 모든 링크는 target="_self" 속성을 포함하세요.
+
+[⚠️ 절대 엄수: 중복 및 마커 금지]
+1. 반복 금지: 동일한 문장, 단락, 조언을 절대 반복하지 마세요. 
+2. 마커 금지: 본문에 //paragraph, //heading 등 어떠한 슬래시(/) 기반 주석도 넣지 마세요.
+3. 가독성: 한 문단(p 태그)은 4~6문장의 적절한 길이로 구성하세요.
 
 [제목 및 구성]
 - 제목 끝에 (2026년 최신판) 등 신뢰도 높은 문구를 추가하세요.
-- 3,000자 이상의 충분한 정보량을 확보하되, 중복 없이 새로운 데이터를 지속적으로 제시하세요."""
+- 3,000자 이상의 풍부한 정보량을 확보하세요."""
 
-        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 중복 없는 풍성한 전문가 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 제목(H2, H3, H4)이 명확히 구분되고 링크가 깔끔하게 배치된 전문가 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content'):
             print("❌ 생성 실패")
             return
 
-        # 본문 물리적 정제 (중복 문장 및 주석 완벽 제거)
+        # 본문 물리적 정제
         post_data['content'] = self.clean_content(post_data['content'])
         
         img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
