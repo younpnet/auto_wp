@@ -44,34 +44,23 @@ class WordPressAutoPoster:
         self.recent_titles = [post['title'] for post in self.internal_link_pool]
 
     def fetch_internal_link_pool(self, count=15):
-        """내부 링크로 사용할 최근 발행글의 제목과 URL을 가져옵니다. 경로 중복 방지를 위해 URL을 정제합니다."""
+        """내부 링크용 최근 발행글을 가져옵니다."""
         url = f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts"
         params = {"per_page": count, "status": "publish", "_fields": "title,link"}
         try:
             res = requests.get(url, headers=self.headers, params=params, timeout=20)
             if res.status_code == 200:
-                posts = []
-                for post in res.json():
-                    clean_url = post['link'].strip()
-                    if clean_url.startswith('http'):
-                        posts.append({
-                            "title": re.sub('<.*?>', '', post['title']['rendered']).strip(),
-                            "url": clean_url
-                        })
-                return posts
+                return [{"title": re.sub('<.*?>', '', post['title']['rendered']).strip(), "url": post['link'].strip()} for post in res.json()]
         except: pass
         return []
 
     def load_external_links(self, count=2):
-        """links.json에서 무작위 외부 링크를 가져오며 URL 형식을 점검합니다."""
+        """무작위 외부 링크를 가져옵니다."""
         try:
             if os.path.exists('links.json'):
                 with open('links.json', 'r', encoding='utf-8') as f:
                     links = json.load(f)
-                    sampled = random.sample(links, min(len(links), count))
-                    for link in sampled:
-                        link['url'] = link['url'].strip()
-                    return sampled
+                    return random.sample(links, min(len(links), count))
         except: pass
         return []
 
@@ -95,7 +84,7 @@ class WordPressAutoPoster:
         return tag_ids
 
     def search_naver_news(self):
-        queries = ["국민연금 수령액 늘리는 법", "2026 국민연금 개정안", "노후 준비 유망 자산", "기초연금 소득인정액 변화"]
+        queries = ["국민연금 개혁안 영향", "노후 자산관리 실전 전략", "국민연금 수령액 늘리는 팁"]
         query = random.choice(queries)
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {"X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"], "X-Naver-Client-Secret": CONFIG["NAVER_CLIENT_SECRET"]}
@@ -104,16 +93,18 @@ class WordPressAutoPoster:
             res = requests.get(url, headers=headers, params=params, timeout=20)
             if res.status_code == 200:
                 return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}: {re.sub('<.*?>', '', i['description'])}" for i in res.json().get('items', [])])
-        except: return "국민연금 최신 동향 및 전문가 제언"
+        except: return "국민연금 최신 동향 분석"
         return ""
 
     def generate_image(self, title, excerpt):
         print(f"🎨 이미지 생성 중 (노년 테마): {title}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         image_prompt = (
-            f"A high-end cinematic lifestyle photography for a Korean finance blog. "
-            f"Subject: A content South Korean elderly couple in their 70s, looking happy and secure "
-            f"in a sun-filled, modern home. Photorealistic, soft focus background, 16:9, NO TEXT."
+            f"High-end professional photography for a financial blog. "
+            f"Subject: A happy South Korean elderly couple in their late 70s, "
+            f"sitting in a sun-drenched, modern minimalist Korean home, holding a financial document and smiling warmly. "
+            f"Style: Photorealistic, shallow depth of field, cinematic lighting, 16:9 aspect ratio. "
+            f"CRITICAL: NO TEXT, NO LETTERS, NO NUMBERS in the image."
         )
         payload = {"instances": [{"prompt": image_prompt}], "parameters": {"sampleCount": 1}}
         try:
@@ -132,81 +123,36 @@ class WordPressAutoPoster:
                 img.save(out, format="JPEG", quality=70, optimize=True)
                 raw_data = out.getvalue()
             except: pass
-        files = {'file': (f"nps_pro_{int(time.time())}.jpg", raw_data, "image/jpeg")}
+        files = {'file': (f"nps_senior_{int(time.time())}.jpg", raw_data, "image/jpeg")}
         res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=self.headers, files=files, timeout=60)
         return res.json().get('id') if res.status_code == 201 else None
 
     def clean_content(self, content):
-        """본문 내 중복 내용 제거 및 깨진 URL 경로(도메인 중복 및 .net 파편)를 강력 교정합니다."""
+        """본문 내 중복 및 불필요 마커 제거"""
         if not content: return ""
-        
-        # 1. AI 가짜 주석 및 불필요 마커 제거
         content = re.sub(r'//\s*[a-zA-Z가-힣]+', '', content)
         content = content.replace('```html', '').replace('```', '')
-
-        # 2. 리스트 블록 병합
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
-        # 3. 깨진 URL 경로 정밀 교정 (강화된 로직)
-        # 예시: href="https://younp.net/path/https://younp.net/path" -> 뒤쪽 URL만 추출
-        def fix_broken_url(match):
-            raw_url = match.group(1)
-            # URL 내부에 https:// 혹은 http:// 가 다시 등장하는지 확인
-            all_urls = re.findall(r'https?://[^\s"<>]+', raw_url)
-            if len(all_urls) > 1:
-                # 여러 개가 겹쳐 있다면 가장 마지막의 완전한 URL을 선택
-                target_url = all_urls[-1]
-                return f'href="{target_url}"'
-            
-            # .net/ 이나 도메인 파편이 중간에 낀 경우 교정
-            fixed_url = re.sub(r'(https?://[^/]+)/+\.net/+', r'\1/', raw_url)
-            # 중복 슬래시 제거 (프로토콜 부분 제외)
-            fixed_url = re.sub(r'([^:])//+', r'\1/', fixed_url)
-            return f'href="{fixed_url}"'
-
-        content = re.sub(r'href="([^"]+)"', fix_broken_url, content)
-        
-        # 4. 블록 단위 지문 대조 (중복 문단 차단)
         blocks = re.split(r'(<!-- wp:[^>]+-->)', content)
         seen_fingerprints = set()
         refined_output = []
-        
         for i in range(len(blocks)):
             segment = blocks[i]
             if segment.startswith('<!-- wp:') or segment.startswith('<!-- /wp:'):
                 refined_output.append(segment)
                 continue
-            
             text_only = re.sub(r'<[^>]+>', '', segment).strip()
             if len(text_only) > 15:
                 fingerprint = re.sub(r'[^가-힣]', '', text_only)[:100]
                 if fingerprint in seen_fingerprints:
-                    if refined_output and refined_output[-1].startswith('<!-- wp:'):
-                        refined_output.pop()
+                    if refined_output and refined_output[-1].startswith('<!-- wp:'): refined_output.pop()
                     continue
                 seen_fingerprints.add(fingerprint)
             refined_output.append(segment)
             
-        temp_content = "".join(refined_output).strip()
-        
-        # 5. 동일 문장 패턴 반복 제거 (200번 반복 방어용)
-        sentences = re.split(r'(?<=[.!?])\s+', temp_content)
-        unique_sentences = []
-        sentence_set = set()
-        
-        for s in sentences:
-            s_clean = re.sub(r'[^가-힣]', '', s).strip()
-            if len(s_clean) > 20:
-                if s_clean in sentence_set:
-                    continue
-                sentence_set.add(s_clean)
-            unique_sentences.append(s)
-            
-        final_content = " ".join(unique_sentences)
-        
-        # 6. 연속된 동일 구절 물리적 제거
+        final_content = "".join(refined_output).strip()
         final_content = re.sub(r'(([가-힣\s\d,.\(\)]{10,})\s*)\2{2,}', r'\1', final_content)
-        
         return final_content
 
     def call_gemini(self, prompt, system_instruction):
@@ -233,55 +179,68 @@ class WordPressAutoPoster:
         try:
             res = requests.post(url, json=payload, timeout=300)
             if res.status_code == 200:
-                text_content = res.json()['candidates'][0]['content']['parts'][0]['text']
-                return json.loads(text_content)
+                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
         except Exception as e:
             print(f"❌ AI 오류: {e}")
         return None
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] URL 무결성 및 구조화 생성 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 고도화된 URL 보안 모드 가동 ---")
         news = self.search_naver_news()
         
-        # 외부 링크 지침 (2개 필수 사용)
-        ext_link_instr = "[⚠️ 절대 원본 유지: 외부 링크 2개]\n"
-        for i, link in enumerate(self.external_links):
-            ext_link_instr += f"{i+1}. 제목: {link['title']}, URL: {link['url']}\n"
-            
-        # 내부 링크 지침 (2개 필수 사용)
+        # 외부/내부 링크 매핑 데이터 생성
         int_links = random.sample(self.internal_link_pool, min(len(self.internal_link_pool), 2))
-        int_link_instr = "[⚠️ 절대 원본 유지: 내부 링크 2개]\n"
-        for i, link in enumerate(int_links):
-            int_link_instr += f"{i+1}. 제목: {link['title']}, URL: {link['url']}\n"
         
-        system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
+        # AI에게 전달할 '가짜' URL 플레이스홀더 (보안 및 오류 방지용)
+        links_mapping = {}
+        link_instr_list = []
+        
+        for i, link in enumerate(self.external_links):
+            key = f"PLACEHOLDER_EXT_{i+1}"
+            links_mapping[key] = link['url']
+            link_instr_list.append(f"- 제목: {link['title']}, URL: {key} (외부)")
+            
+        for i, link in enumerate(int_links):
+            key = f"PLACEHOLDER_INT_{i+1}"
+            links_mapping[key] = link['url']
+            link_instr_list.append(f"- 제목: {link['title']}, URL: {key} (내부)")
+            
+        link_instruction = "\n".join(link_instr_list)
+        
+        system = f"""대한민국 최고의 금융 전문가로서 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
 
-[⚠️ 중요: 링크 삽입 절대 금기 사항]
-1. 제공된 링크 URL은 이미 완벽한 절대 경로입니다. **URL 문자열을 단 한 글자도 수정, 결합, 완성하지 마세요.**
-2. href="" 속성에 URL을 넣을 때, 도메인을 다시 붙이거나 경로 사이에 파편(.net 등)을 끼워 넣는 행위는 절대 금지입니다. 
-3. 외부 링크(2개): {ext_link_instr}
-4. 내부 링크(2개): {int_link_instr}
-5. 모든 링크는 반드시 target="_self" 속성을 포함해야 합니다.
+[⚠️ 중요: 링크 삽입 절대 규칙 - 위반 시 작업 실패]
+1. 본문에 다음 4개의 링크를 반드시 포함하세요:
+{link_instruction}
+2. 링크 태그 작성 시 URL 부분에 제공된 플레이스홀더(예: PLACEHOLDER_EXT_1)를 **수정하지 말고 그대로** 넣으세요.
+3. 모든 링크는 반드시 <a href="PLACEHOLDER_..." target="_self">제목</a> 형식을 사용하세요.
+4. 버튼 블록이 필요하다면 수식어 없이 제목만 사용하세요.
 
-[⚠️ 필수: 문서 구조화 및 제목 블록]
-1. 본문은 반드시 h2, h3, h4 제목 블록을 논리적으로 사용하세요. 모든 섹션의 시작은 제목 블록이어야 합니다. 타이틀 누락은 절대 안 됩니다.
+[⚠️ 필수: 문서 구조 및 가독성]
+1. 계층 구조: 반드시 h2, h3, h4 제목 블록을 사용하여 논리적으로 섹션을 나누세요.
+2. 문단 길이: 데스크탑과 모바일 모두를 고려하여 한 문단(p 태그)은 4~6문장으로 구성하세요.
 
-[⚠️ 절대 엄수: 중복 및 가독성]
-1. 반복 금지: 동일 문장이나 단락 반복은 루프 현상으로 간주되어 품질 점수가 하락합니다.
-2. 마커 금지: 본문에 //paragraph와 같은 슬래시 기반 주석을 절대 넣지 마세요.
-3. 가독성: 한 문단(p 태그)은 4~6문장의 적절한 길이로 구성하여 데스크탑과 모바일 가독성을 모두 확보하세요.
+[⚠️ 중복 방지 및 제목]
+1. 반복 금지: 동일한 문장, 단락, 조언을 절대 반복하지 마세요. (200번 반복 현상 절대 금지)
+2. 제목 규칙: 제목 시작 부분에 '2026년'이나 '2월'을 넣지 마세요. 연도는 제목 끝에 배치하세요.
 
-[제목 및 구성]
-- 제목 맨 앞에 연도(2026년 등)를 기계적으로 넣지 마세요. 필요시 제목 뒤에 배치하세요.
-- 3,000자 이상의 압도적인 정보량을 확보하고 상세한 FAQ를 포함하세요."""
+[본문 구성]
+- 3,000자 이상의 압도적인 정보량과 상세한 FAQ를 포함하세요."""
 
-        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 링크가 100% 무결하게 삽입된 전문가 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 링크가 플레이스홀더로 완벽히 배치된 전문가 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content'):
             print("❌ 생성 실패")
             return
 
-        # 본문 물리적 정제 (중복 URL 경로 복구 로직 실행)
+        # [핵심 단계] 플레이스홀더를 실제 원본 URL로 안전하게 치환 (AI의 개입 차단)
+        final_content = post_data['content']
+        for placeholder, real_url in links_mapping.items():
+            final_content = final_content.replace(placeholder, real_url)
+            
+        post_data['content'] = final_content
+
+        # 본문 물리적 정제 (중복 제거 등)
         post_data['content'] = self.clean_content(post_data['content'])
         
         img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
