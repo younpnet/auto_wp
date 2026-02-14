@@ -210,50 +210,48 @@ class WordPressAutoPoster:
         return None
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 구조화 및 링크 최적화 생성 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 2+2 링크 최적화 및 구조화 생성 시작 ---")
         news = self.search_naver_news()
         
-        # 외부 링크 지침 (추천 문구 배제)
-        ext_link_instr = "[외부 링크 정보]\n"
-        for link in self.external_links:
-            ext_link_instr += f"- 제목: {link['title']}, URL: {link['url']}\n"
+        # 외부 링크 지침 (2개 필수 사용)
+        ext_link_instr = "[필수 사용: 외부 링크 2개]\n"
+        for i, link in enumerate(self.external_links):
+            ext_link_instr += f"{i+1}. 제목: {link['title']}, URL: {link['url']}\n"
             
-        # 내부 링크 지침
+        # 내부 링크 지침 (2개 필수 사용)
         int_links = random.sample(self.internal_link_pool, min(len(self.internal_link_pool), 2))
-        int_link_instr = "[내부 링크 정보]\n"
-        for link in int_links:
-            int_link_instr += f"- 제목: {link['title']}, URL: {link['url']}\n"
+        int_link_instr = "[필수 사용: 내부 링크 2개]\n"
+        for i, link in enumerate(int_links):
+            int_link_instr += f"{i+1}. 제목: {link['title']}, URL: {link['url']}\n"
         
         system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
 
-[⚠️ 필수: 문서 구조화 및 제목 블록 사용]
-1. 본문은 반드시 논리적 계층에 따라 제목 블록을 사용해야 합니다.
-   - 대주제: <!-- wp:heading {{"level":2}} --><h2>...</h2><!-- /wp:heading -->
-   - 소주제: <!-- wp:heading {{"level":3}} --><h3>...</h3><!-- /wp:heading -->
-   - 세부항목: <!-- wp:heading {{"level":4}} --><h4>...</h4><!-- /wp:heading -->
-2. 모든 섹션의 시작은 위 제목 블록으로 시작하세요. 타이틀이 빠지지 않도록 주의하세요.
+[⚠️ 중요: 링크 삽입 의무 규칙 - 총 4개 삽입]
+1. 외부 링크(2개): 아래 제공된 외부 링크 2개를 모두 본문에 포함하세요. {ext_link_instr}
+   - 링크가 본문 내용과 직접 관련이 있다면 문장 내 <a> 태그로 자연스럽게 삽입하세요.
+   - 맥락상 분리가 필요하다면 구텐베르크 버튼 블록 형식을 사용하되, 버튼 텍스트에 '추천', '클릭' 등의 수식어 없이 오직 링크의 '제목'만 표시하세요.
+   - 버튼 블록 예시: <!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="URL" target="_self">제목</a></div><!-- /wp:button --></div><!-- /wp:buttons -->
+2. 내부 링크(2개): 아래 제공된 내부 링크 2개를 모두 본문에 포함하세요. {int_link_instr}
+   - 본문 중간과 하단 등 적절한 위치에 분산하여 독자의 체류 시간을 높이세요.
+3. 모든 링크는 반드시 target="_self" 속성을 포함해야 합니다.
 
-[필수: 링크 및 버튼 규칙]
-1. 외부 링크(2개): {ext_link_instr}
-   - [중요] 버튼 블록 사용 시 버튼 텍스트에 '추천링크', '광고', '클릭' 등의 부가적인 수식어를 절대 넣지 마세요. 오직 링크의 '제목'만 텍스트로 사용하세요.
-   - 버튼 블록 형식: <!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="URL" target="_self">제목</a></div><!-- /wp:button --></div><!-- /wp:buttons -->
-2. 내부 링크(2개): {int_link_instr}을 본문 맥락에 맞게 자연스럽게 배치하세요.
-3. 모든 링크는 target="_self" 속성을 포함하세요.
+[⚠️ 필수: 문서 구조화 및 제목 블록]
+1. 본문은 반드시 논리적 계층에 따라 제목 블록을 사용하여 구조화하세요. (h2, h3, h4 필수 포함)
+2. 모든 섹션은 구텐베르크 제목 블록으로 시작해야 합니다. 타이틀이 빠지지 않도록 각별히 주의하세요.
 
 [⚠️ 절대 엄수: 중복 및 마커 금지]
-1. 반복 금지: 동일한 문장, 단락, 조언을 절대 반복하지 마세요. 
-2. 마커 금지: 본문에 //paragraph, //heading 등 어떠한 슬래시(/) 기반 주석도 넣지 마세요.
-3. 가독성: 한 문단(p 태그)은 4~6문장의 적절한 길이로 구성하세요.
+1. 반복 금지: 동일한 문장이나 단락을 절대 중복하여 사용하지 마세요.
+2. 마커 금지: 본문에 //paragraph, //heading 등 슬래시(/) 기반의 어떠한 주석도 넣지 마세요.
+3. 가독성: 한 문단(p 태그)은 4~6문장의 적절한 길이로 구성하여 데스크탑과 모바일 모두를 고려하세요.
 
-[제목 작성 규칙 (필수)]
-- 제목의 맨 앞에 '2026년'이나 '2월' 등 연도 및 날짜 정보를 절대 배치하지 마세요.
-- 제목은 독자의 호기심을 유발하는 '핵심 키워드'나 '강력한 혜택'으로 시작해야 합니다.
-- 연도 표기가 꼭 필요하다면 제목의 가장 마지막 부분에 (2026년 업데이트) 혹은 [2026년 최신판]과 같은 형식으로 자연스럽게 추가하세요.
+[제목 작성 규칙]
+- 제목의 시작 부분에 '2026년'이나 '2월'을 넣지 마세요.
+- 연도 표기가 필요하다면 제목 맨 뒤에 (2026년 최신판) 등의 형식으로 덧붙이세요.
 
 [본문 구성]
-- 3,000자 이상의 풍부한 정보량을 확보하세요."""
+- 3,000자 이상의 풍부한 정보량을 확보하세요. FAQ 섹션을 포함하세요."""
 
-        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 제목 규칙을 준수하고 링크가 깔끔하게 배치된 전문가 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 링크 4개(외부2, 내부2)가 완벽히 배치되고 제목 계층이 살아있는 전문가 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content'):
             print("❌ 생성 실패")
