@@ -126,17 +126,17 @@ class WordPressAutoPoster:
         return res.json().get('id') if res.status_code == 201 else None
 
     def clean_content(self, content):
-        """본문 내 중복 내용 및 무한 반복을 물리적으로 제거하는 고도화된 클리닝"""
+        """본문 내 중복 내용, 무한 반복, 불필요 주석을 완벽하게 제거하는 최종 클리닝 로직"""
         if not content: return ""
         
-        # 1. AI 주석 제거
-        content = re.sub(r'//[a-zA-Z가-힣]+', '', content)
+        # 1. AI 주석 및 가짜 마커 제거 (//paragraph, //heading 등 공백 포함 처리)
+        content = re.sub(r'//\s*[a-zA-Z가-힣]+', '', content)
         content = content.replace('```html', '').replace('```', '')
 
         # 2. 리스트 블록 병합
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
-        # 3. 블록 단위 지문 대조 (중복 문단 100% 차단)
+        # 3. 블록 단위 지문 대조 (중복 문단 차단)
         blocks = re.split(r'(<!-- wp:[^>]+-->)', content)
         seen_fingerprints = set()
         refined_output = []
@@ -147,21 +147,37 @@ class WordPressAutoPoster:
                 refined_output.append(segment)
                 continue
             
-            # 텍스트에서 한글만 추출하여 지문 생성 (의미적 중복 체크)
+            # 한글만 추출하여 지문 생성 (의미적 중복 체크)
             text_only = re.sub(r'<[^>]+>', '', segment).strip()
-            if len(text_only) > 20:
-                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:60]
+            if len(text_only) > 15:
+                fingerprint = re.sub(r'[^가-힣]', '', text_only)[:100] # 지문 길이 확장
                 if fingerprint in seen_fingerprints:
-                    # 중복 블록이면 직전 마커까지 제거
                     if refined_output and refined_output[-1].startswith('<!-- wp:'):
                         refined_output.pop()
                     continue
                 seen_fingerprints.add(fingerprint)
             refined_output.append(segment)
             
-        final_content = "".join(refined_output).strip()
+        temp_content = "".join(refined_output).strip()
         
-        # 4. 동일 문장 패턴 반복 제거 (강력한 문장 수준 클리닝)
+        # 4. 동일 문장 패턴 반복 제거 (강력한 문장 수준 클리닝: 200번 반복 방어)
+        # 의미 있는 문장(15자 이상)이 문서 전체에서 반복되는지 검사
+        sentences = re.split(r'(?<=[.!?])\s+', temp_content)
+        unique_sentences = []
+        sentence_set = set()
+        
+        for s in sentences:
+            # 문장에서 한글만 추출하여 비교용 지문 생성
+            s_clean = re.sub(r'[^가-힣]', '', s).strip()
+            if len(s_clean) > 20:
+                if s_clean in sentence_set:
+                    continue
+                sentence_set.add(s_clean)
+            unique_sentences.append(s)
+            
+        final_content = " ".join(unique_sentences)
+        
+        # 5. 연속된 동일 구절 물리적 제거 (정규표현식)
         final_content = re.sub(r'(([가-힣\s\d,.\(\)]{10,})\s*)\2{2,}', r'\1', final_content)
         
         return final_content
@@ -173,7 +189,7 @@ class WordPressAutoPoster:
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "temperature": 0.75,
+                "temperature": 0.7, # 안정성을 위해 하향 조정
                 "maxOutputTokens": 8192,
                 "responseSchema": {
                     "type": "OBJECT",
@@ -197,51 +213,46 @@ class WordPressAutoPoster:
         return None
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 맞춤형 링크 및 문단 고도화 생성 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 반복 제거 및 가독성 고도화 생성 시작 ---")
         news = self.search_naver_news()
         
-        # 외부 링크 지침 고도화 (관련성 기반 배치)
-        ext_link_instr = "[외부 링크 정보]\n"
+        # 외부 링크 지침 (2개)
+        ext_link_instr = "[외부 링크 정보 (2개 모두 사용 필수)]\n"
         for link in self.external_links:
             ext_link_instr += f"- 제목: {link['title']}, URL: {link['url']}\n"
             
-        ext_link_instr += "\n[외부 링크 배치 규칙 (필수)]\n"
-        ext_link_instr += "1. 내용 관련성 판단: 링크의 제목이나 목적이 현재 작성 중인 단락의 내용과 직접적인 관련이 있다면 문장 내부에 <a> 태그(앵커 텍스트)로 자연스럽게 삽입하세요.\n"
-        ext_link_instr += "2. 버튼 블록 사용: 만약 링크가 본문 내용과 맥락상 직접적인 연관이 적다면, 단락 사이에 '외부 광고'나 '추천 정보' 느낌이 나도록 아래의 구텐베르크 버튼 블록 형식을 사용하여 독립적으로 배치하세요.\n"
-        ext_link_instr += "   버튼 블록 예시: <!-- wp:buttons {\"layout\":{\"type\":\"flex\",\"justifyContent\":\"center\"}} --><div class=\"wp-block-buttons\"><!-- wp:button --><div class=\"wp-block-button\"><a class=\"wp-block-button__link\" href=\"URL\" target=\"_self\">제목</a></div><!-- /wp:button --></div><!-- /wp:buttons -->\n"
-            
         # 내부 링크 지침 (2개)
         int_links = random.sample(self.internal_link_pool, min(len(self.internal_link_pool), 2))
-        int_link_instr = "[내부 링크 정보]\n"
+        int_link_instr = "[내부 링크 정보 (2개 모두 사용 필수)]\n"
         for link in int_links:
             int_link_instr += f"- 제목: {link['title']}, URL: {link['url']}\n"
-        int_link_instr += "규칙: 위 내부 링크 2개를 글의 맥락에 맞게 삽입하여 독자의 체류 시간을 높이세요.\n"
         
         system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
 
-[⚠️ 절대 엄수: 중복 방지 및 문단 구조]
-1. 반복 금지: 동일한 문장, 수치, 조언을 절대 중복하여 사용하지 마세요. (반복 발견 시 품질 점수 하락)
-2. 문단 가독성: 데스크탑과 모바일 모두를 고려하여, 한 문단(p 태그 하나)은 4~6문장 내외의 논리적 덩어리로 구성하세요. 너무 짧은 한 문장 위주의 나열을 지양하되, 너무 길어지지 않게 주의하세요.
-3. 정보 밀도: 3,000자 이상을 채우기 위해 같은 말을 되풀이하지 말고, 매 섹션마다 '새로운 데이터'와 '실전 전략'을 추가하세요.
+[⚠️ 절대 엄수: 중복 및 마커 금지 규칙]
+1. 반복 금지: 동일한 문장, 단락, 조언을 절대 반복하지 마세요. 특히 서론과 결론이 비슷하지 않게 하세요. 200번 반복과 같은 루프 현상은 절대 용납되지 않습니다.
+2. 마커 금지: 본문에 //paragraph, //heading, //list 등 어떠한 슬래시(/) 기반의 코멘트나 주석을 넣지 마세요.
+3. 구텐베르크 표준: 오직 <!-- wp:paragraph --><p>...</p><!-- /wp:paragraph --> 형태의 순수 HTML 블록만 출력하세요.
 
-[필수 구성 및 링크]
-1. 외부 링크 적용: {ext_link_instr}
-2. 내부 링크 적용: {int_link_instr}
-3. 구조: 반드시 <!-- wp:paragraph --><p>...</p><!-- /wp:paragraph --> 마커를 사용하고 h2 소제목을 6개 이상 만드세요.
-4. 중복 방지: 이미 다룬 주제들({self.recent_titles})과 다른 독창적인 정보를 다루세요.
-5. 모든 링크는 target="_self" 속성을 포함하세요.
+[필수: 가독성 및 링크 규칙]
+1. 문단 구성: 데스크탑과 모바일 모두를 고려하여 한 문단(p 태그)은 4~6문장의 적절한 길이로 구성하세요.
+2. 외부 링크(2개): {ext_link_instr}
+   - 내용과 관련 있으면 앵커 텍스트로, 관련 없으면 단락 사이에 버튼 블록 형식을 사용하여 '추천 광고' 느낌으로 배치하세요.
+3. 내부 링크(2개): {int_link_instr}
+   - 본문 맥락에 맞게 삽입하여 독자의 체류 시간을 높이세요.
+4. 모든 링크는 target="_self" 속성을 포함하세요.
 
 [제목 및 구성]
-- 제목 끝에 (2026년 업데이트) 등의 문구를 자연스럽게 추가하세요.
-- FAQ 섹션은 4개 이상의 독립적인 질문과 답변으로 구성하세요."""
+- 제목 끝에 (2026년 최신판) 등 신뢰도 높은 문구를 추가하세요.
+- 3,000자 이상의 충분한 정보량을 확보하되, 중복 없이 새로운 데이터를 지속적으로 제시하세요."""
 
-        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 중복 없는 풍성하고 링크가 완벽히 배치된 전문가 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 중복 없는 풍성한 전문가 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content'):
             print("❌ 생성 실패")
             return
 
-        # 본문 물리적 정제
+        # 본문 물리적 정제 (중복 문장 및 주석 완벽 제거)
         post_data['content'] = self.clean_content(post_data['content'])
         
         img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
