@@ -134,6 +134,25 @@ class WordPressAutoPoster:
         return res.json().get('id') if res.status_code == 201 else None
 
 
+    def extract_and_validate_url(self, url_string):
+        """URL 문자열에서 유효한 URL만 추출하고 검증합니다."""
+        if not url_string:
+            return ""
+
+        # 여러 개의 https:// 가 있으면 마지막 것만 선택
+        urls = re.findall(r'https?://[^\s"<>]+', url_string)
+        if urls:
+            url = urls[-1]
+        else:
+            url = url_string
+
+        # URL이 https://로 시작하지 않으면 빈 문자열 반환
+        if not url.startswith('http://') and not url.startswith('https://'):
+            return ""
+
+        return url
+
+
     def clean_content(self, content):
         """본문 내 중복, 불필요 주석 및 깨진 하이퍼링크 패턴을 물리적으로 제거합니다."""
         if not content: return ""
@@ -142,37 +161,51 @@ class WordPressAutoPoster:
         content = re.sub(r'//\s*[a-zA-Z가-힣]+', '', content)
         content = content.replace('```html', '').replace('```', '')
 
-        # 2. 하이퍼링크 내 도메인 중복 및 경로 파편 강제 교정 (개선)
+        # 2. 하이퍼링크 내 도메인 중복 및 경로 파편 강제 교정 (대폭 강화)
         def repair_links(match):
             url = match.group(1)
 
-            # 2-1. URL 내부에 https:// 가 여러 개 있으면 마지막 것만 선택
-            find_all_http = re.findall(r'https?://[^\s"<>]+', url)
-            if len(find_all_http) > 1:
-                url = find_all_http[-1]
+            # 2-1. 유효한 URL만 추출
+            url = self.extract_and_validate_url(url)
+            if not url:
+                return f'href="#"'  # 유효하지 않은 URL은 #으로 대체
 
-            # 2-2. 도메인 뒤에 TLD(최상위 도메인)가 중복되는 패턴 제거
-            # 예: younp.net/.net/ → younp.net/
-            url = re.sub(r'(https?://[^/]+\.[a-z]{2,})/\.\w+/', r'\1/', url)
+            # 2-2. URL 파싱하여 도메인과 경로 분리
+            url_match = re.match(r'(https?://[^/]+)(.*)', url)
+            if not url_match:
+                return f'href="{url}"'
 
-            # 2-3. 도메인 전체가 경로에 다시 나타나는 패턴 제거
-            # 예: https://younp.net/path/younp.net/path → https://younp.net/path
-            domain_match = re.match(r'(https?://([^/]+))/(.+)', url)
-            if domain_match:
-                protocol_domain = domain_match.group(1)
-                domain_only = domain_match.group(2)
-                path = domain_match.group(3)
-                # 경로에서 도메인이 반복되면 첫 번째 이후 모두 제거
-                path = re.sub(f'/{re.escape(domain_only)}/', '/', path)
-                url = f"{protocol_domain}/{path}"
+            domain = url_match.group(1)
+            path = url_match.group(2) if url_match.group(2) else ""
 
-            # 2-4. 연속된 슬래시 제거 (단, 프로토콜의 :// 제외)
-            url = re.sub(r'([^:])//+', r'\1/', url)
+            # 2-3. 경로에서 도메인 파편 제거
+            # 예: /.net/ 같은 TLD 파편 제거
+            path = re.sub(r'/\.[a-z]{2,}/', '/', path)
 
-            # 2-5. 경로 끝의 불필요한 슬래시 정리
-            url = re.sub(r'/+$', '', url)
+            # 2-4. 경로에 다른 도메인이 포함된 경우 제거
+            # 예: /경로/-pension.sleepyourmoney.net → /경로/
+            path = re.sub(r'/[^/]*\.[a-z]{2,}(?:/|$)', '/', path)
 
-            return f'href="{url}"'
+            # 2-5. 경로에서 도메인 자체가 반복되는 경우 제거
+            domain_name = domain.replace('https://', '').replace('http://', '')
+            if domain_name in path:
+                path = re.sub(f'/{re.escape(domain_name)}/?', '/', path)
+
+            # 2-6. 연속된 슬래시 정리
+            path = re.sub(r'/+', '/', path)
+
+            # 2-7. 경로가 없거나 /만 있으면 제거
+            if path in ['', '/']:
+                path = ''
+
+            # 2-8. 최종 URL 재구성
+            clean_url = f"{domain}{path}"
+
+            # 2-9. URL 끝의 불필요한 슬래시 제거 (루트 경로 제외)
+            if clean_url.endswith('/') and clean_url != f"{domain}/":
+                clean_url = clean_url.rstrip('/')
+
+            return f'href="{clean_url}"'
 
         content = re.sub(r'href="([^"]+)"', repair_links, content)
 
@@ -233,7 +266,7 @@ class WordPressAutoPoster:
 
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 고도화된 링크 보호 모드 가동 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 최종 링크 보호 모드 가동 ---")
         news = self.search_naver_news()
 
         # 외부/내부 링크 매핑 데이터 생성 (특수 기호 기반 토큰 사용)
@@ -242,12 +275,12 @@ class WordPressAutoPoster:
         link_instr_list = []
 
         for i, link in enumerate(self.external_links):
-            token = f"##EXTERNAL_LINK_{i}##"
+            token = f"EXTLINK{i}TOKEN"  # 더 단순한 토큰으로 변경
             links_mapping[token] = link['url']
             link_instr_list.append(f"- 제목: {link['title']}, 삽입코드: {token} (외부추천)")
 
         for i, link in enumerate(int_links):
-            token = f"##INTERNAL_LINK_{i}##"
+            token = f"INTLINK{i}TOKEN"  # 더 단순한 토큰으로 변경
             links_mapping[token] = link['url']
             link_instr_list.append(f"- 제목: {link['title']}, 삽입코드: {token} (내부참고)")
 
@@ -259,16 +292,24 @@ class WordPressAutoPoster:
 [⚠️ 하이퍼링크 삽입 절대 수칙 - 4개 필수 삽입]
 1. 본문에 아래 4개의 삽입코드를 반드시 <a> 태그의 href 값으로 포함하세요:
 {link_instruction}
-2. **절대 금기**: 삽입코드(예: ##INTERNAL_LINK_0##) 앞에 도메인 주소(https://...)를 붙이거나 문자열을 수정하지 마세요. 
-   - 나쁜 예: <a href="https://younp.net/##INTERNAL_LINK_0##">
-   - 좋은 예: <a href="##INTERNAL_LINK_0##">
-3. 링크 태그 내부에 제공된 '삽입코드' 문자열만 정확히 입력하세요. 모든 링크는 target="_self" 속성을 포함하세요.
+
+2. **절대 금기 사항**:
+   - 삽입코드 앞뒤에 어떤 문자도 추가하지 마세요 (/, -, https:// 등 금지)
+   - 삽입코드를 수정하거나 변형하지 마세요
+   - 나쁜 예: <a href="https://example.com/INTLINK0TOKEN">
+   - 나쁜 예: <a href="/INTLINK0TOKEN">
+   - 나쁜 예: <a href="-INTLINK0TOKEN">
+   - 좋은 예: <a href="INTLINK0TOKEN">
+
+3. 링크 사용법:
+   - href 속성에 삽입코드만 정확히 입력: <a href="INTLINK0TOKEN" target="_self">링크텍스트</a>
+   - 모든 링크에 target="_self" 속성 포함
 
 
 [⚠️ 필수: 문서 구조 및 품질]
 1. 계층 구조: 반드시 h2, h3, h4 제목 블록을 사용하여 논리적으로 섹션을 나누세요. 모든 섹션은 제목 블록으로 시작해야 합니다.
 2. 가독성: 한 문단(p 태그)은 4~6문장으로 구성하세요.
-3. 중복 방지: 동일 문장이나 내용을 절대 반복하지 마세요. (200번 반복 현상 감지 시 실패로 처리됨)
+3. 중복 방지: 동일 문장이나 내용을 절대 반복하지 마세요.
 
 
 [본문 구성]
@@ -283,40 +324,66 @@ class WordPressAutoPoster:
             return
 
 
-        # [핵심 단계 1] AI가 토큰 앞에 도메인을 붙였을 경우 정제 (강화)
+        # [핵심 단계 1] AI가 생성한 모든 잘못된 패턴 사전 제거
         final_content = post_data['content']
+
         for token in links_mapping.keys():
-            # 더 강력한 패턴으로 모든 URL 프리픽스 제거
+            # 패턴 1: 도메인/경로/토큰 형태 제거
             final_content = re.sub(
-                rf'href="https?://[^"]*?{re.escape(token)}"', 
-                f'href="{token}"', 
+                rf'href="https?://[^"]*[/\-]{re.escape(token)}"',
+                f'href="{token}"',
+                final_content
+            )
+            # 패턴 2: 상대경로/토큰 형태 제거
+            final_content = re.sub(
+                rf'href="[/\-]+{re.escape(token)}"',
+                f'href="{token}"',
+                final_content
+            )
+            # 패턴 3: 토큰 앞에 어떤 문자든 있으면 제거
+            final_content = re.sub(
+                rf'href="[^"]*?{re.escape(token)}"',
+                f'href="{token}"',
                 final_content
             )
 
 
-        # [핵심 단계 2] 토큰을 실제 URL로 치환 (정확한 매칭)
+        # [핵심 단계 2] 토큰을 실제 URL로 정확히 치환
         for token, real_url in links_mapping.items():
-            # 토큰이 정확히 매칭되는 경우만 치환 (부분 매칭 방지)
-            final_content = re.sub(
-                rf'href="{re.escape(token)}"',
-                f'href="{real_url}"',
-                final_content
-            )
+            # 토큰만 정확히 매칭하여 치환
+            final_content = final_content.replace(f'href="{token}"', f'href="{real_url}"')
 
         post_data['content'] = final_content
 
 
-        # [디버그] 치환된 링크 검증
-        print("=== 디버그: 치환된 링크 검증 ===")
+        # [디버그] 치환 전후 비교
+        print("\n=== 디버그: 링크 치환 검증 ===")
         for token, real_url in links_mapping.items():
-            matches = re.findall(rf'href="[^"]*{re.escape(real_url)}[^"]*"', final_content)
-            print(f"{token} → {real_url}")
-            for match in matches[:3]:
-                print(f"  발견: {match}")
+            # 토큰이 남아있는지 확인
+            if token in final_content:
+                print(f"⚠️  미치환 토큰 발견: {token}")
+
+            # 실제 URL이 제대로 들어갔는지 확인
+            matches = re.findall(rf'href="([^"]*{re.escape(real_url.split("/")[-1] if "/" in real_url else real_url)}[^"]*)"', final_content)
+            print(f"✓ {token} → {real_url}")
+            for match in matches[:2]:
+                print(f"  → {match}")
 
 
-        # [핵심 단계 3] 최종 본문 물리적 정제 (치환 후 발생할 수 있는 모든 주소 깨짐 사후 교정)
+        # [핵심 단계 3] 최종 본문 물리적 정제
         post_data['content'] = self.clean_content(post_data['content'])
+
+
+        # [최종 검증] 깨진 URL 패턴 체크
+        print("\n=== 최종 URL 검증 ===")
+        broken_patterns = re.findall(r'href="([^"]*(?:/\.[a-z]{2,}/|/[^/]*\.[a-z]{2,}(?:/|$))[^"]*)"', post_data['content'])
+        if broken_patterns:
+            print(f"⚠️  의심스러운 URL 패턴 {len(broken_patterns)}개 발견:")
+            for pattern in broken_patterns[:5]:
+                print(f"  - {pattern}")
+        else:
+            print("✓ 모든 URL이 정상입니다")
+
 
         img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
         tag_ids = self.get_or_create_tag_ids(post_data.get('tags', ''))
@@ -333,9 +400,11 @@ class WordPressAutoPoster:
 
         res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers={"Authorization": f"Basic {self.auth}", "Content-Type": "application/json"}, json=payload, timeout=60)
         if res.status_code == 201:
-            print(f"🎉 발행 성공: {post_data['title']}")
+            print(f"\n🎉 발행 성공: {post_data['title']}")
+            print(f"🔗 URL: {res.json().get('link', 'N/A')}")
         else:
-            print(f"❌ 실패: {res.text}")
+            print(f"\n❌ 발행 실패: {res.status_code}")
+            print(f"오류 내용: {res.text[:500]}")
 
 
 if __name__ == "__main__":
