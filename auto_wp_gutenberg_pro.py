@@ -10,15 +10,11 @@ from datetime import datetime
 
 # 이미지 처리를 위한 PIL 라이브러리
 try:
-    from Image import PIL
+    from PIL import Image
     PIL_AVAILABLE = True
 except ImportError:
-    try:
-        from PIL import Image
-        PIL_AVAILABLE = True
-    except ImportError:
-        PIL_AVAILABLE = False
-        print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다.")
+    PIL_AVAILABLE = False
+    print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다.")
 
 # ==============================================================================
 # 환경 변수 설정
@@ -56,7 +52,6 @@ class WordPressAutoPoster:
             if res.status_code == 200:
                 posts = []
                 for post in res.json():
-                    # URL의 공백을 제거하고 절대 경로인지 확인
                     clean_url = post['link'].strip()
                     if clean_url.startswith('http'):
                         posts.append({
@@ -142,34 +137,34 @@ class WordPressAutoPoster:
         return res.json().get('id') if res.status_code == 201 else None
 
     def clean_content(self, content):
-        """본문 내 중복 내용 제거 및 깨진 URL 경로(도메인 중복)를 강제로 교정합니다."""
+        """본문 내 중복 내용 제거 및 깨진 URL 경로(도메인 중복 및 .net 파편)를 강력 교정합니다."""
         if not content: return ""
         
-        # 1. AI 주석 및 가짜 마커 제거
+        # 1. AI 가짜 주석 및 불필요 마커 제거
         content = re.sub(r'//\s*[a-zA-Z가-힣]+', '', content)
         content = content.replace('```html', '').replace('```', '')
 
         # 2. 리스트 블록 병합
         content = re.sub(r'</ul>\s*<!-- /wp:list -->\s*<!-- wp:list -->\s*<ul>', '', content, flags=re.DOTALL)
         
-        # 3. 깨진 URL 경로 교정 (도메인 중복 패턴 정밀 타격)
-        # 예: https://younp.net/path/younp.net/other -> https://younp.net/other
-        # 예: https://younp.net/.net/ -> https://younp.net/
-        def fix_duplicated_url(match):
-            url = match.group(1)
-            # URL 내부에서 프로콜(http)이나 도메인(younp.net)이 다시 나타나는지 확인
-            domain_match = re.search(r'(https?://[^/]+)', url)
-            if domain_match:
-                base_domain = domain_match.group(1)
-                # 도메인 뒷부분에 다시 도메인이 나타나면 마지막 도메인부터의 경로만 취함
-                parts = url.split(base_domain)
-                if len(parts) > 2: # 중복 발생
-                    return f'href="{base_domain}{parts[-1]}"'
-            return match.group(0)
+        # 3. 깨진 URL 경로 정밀 교정 (강화된 로직)
+        # 예시: href="https://younp.net/path/https://younp.net/path" -> 뒤쪽 URL만 추출
+        def fix_broken_url(match):
+            raw_url = match.group(1)
+            # URL 내부에 https:// 혹은 http:// 가 다시 등장하는지 확인
+            all_urls = re.findall(r'https?://[^\s"<>]+', raw_url)
+            if len(all_urls) > 1:
+                # 여러 개가 겹쳐 있다면 가장 마지막의 완전한 URL을 선택
+                target_url = all_urls[-1]
+                return f'href="{target_url}"'
+            
+            # .net/ 이나 도메인 파편이 중간에 낀 경우 교정
+            fixed_url = re.sub(r'(https?://[^/]+)/+\.net/+', r'\1/', raw_url)
+            # 중복 슬래시 제거 (프로토콜 부분 제외)
+            fixed_url = re.sub(r'([^:])//+', r'\1/', fixed_url)
+            return f'href="{fixed_url}"'
 
-        content = re.sub(r'href="([^"]+)"', fix_duplicated_url, content)
-        # 단순 반복되는 .net/ 등 특수 파편 제거
-        content = re.sub(r'(https?://[^/]+)/+\.net/+', r'\1/', content)
+        content = re.sub(r'href="([^"]+)"', fix_broken_url, content)
         
         # 4. 블록 단위 지문 대조 (중복 문단 차단)
         blocks = re.split(r'(<!-- wp:[^>]+-->)', content)
@@ -194,7 +189,7 @@ class WordPressAutoPoster:
             
         temp_content = "".join(refined_output).strip()
         
-        # 5. 동일 문장 패턴 반복 제거
+        # 5. 동일 문장 패턴 반복 제거 (200번 반복 방어용)
         sentences = re.split(r'(?<=[.!?])\s+', temp_content)
         unique_sentences = []
         sentence_set = set()
@@ -245,51 +240,48 @@ class WordPressAutoPoster:
         return None
 
     def generate_post(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 링크 무결성 고도화 및 구조화 생성 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] URL 무결성 및 구조화 생성 시작 ---")
         news = self.search_naver_news()
         
-        # 외부 링크 지침 (2개)
-        ext_link_instr = "[필수 사용: 외부 링크 2개]\n"
+        # 외부 링크 지침 (2개 필수 사용)
+        ext_link_instr = "[⚠️ 절대 원본 유지: 외부 링크 2개]\n"
         for i, link in enumerate(self.external_links):
             ext_link_instr += f"{i+1}. 제목: {link['title']}, URL: {link['url']}\n"
             
-        # 내부 링크 지침 (2개)
+        # 내부 링크 지침 (2개 필수 사용)
         int_links = random.sample(self.internal_link_pool, min(len(self.internal_link_pool), 2))
-        int_link_instr = "[필수 사용: 내부 링크 2개]\n"
+        int_link_instr = "[⚠️ 절대 원본 유지: 내부 링크 2개]\n"
         for i, link in enumerate(int_links):
             int_link_instr += f"{i+1}. 제목: {link['title']}, URL: {link['url']}\n"
         
         system = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
 
-[⚠️ 중요: 링크 삽입 절대 규칙 - 위반 시 에러 발생]
-1. 아래 제공된 링크 URL은 이미 완벽한 절대 경로(https://...)입니다. 
-2. **절대 URL 앞에 도메인을 추가하거나, 경로를 임의로 수정하지 마세요.** 제공된 문자열 그대로 href="" 안에 넣으세요.
+[⚠️ 중요: 링크 삽입 절대 금기 사항]
+1. 제공된 링크 URL은 이미 완벽한 절대 경로입니다. **URL 문자열을 단 한 글자도 수정, 결합, 완성하지 마세요.**
+2. href="" 속성에 URL을 넣을 때, 도메인을 다시 붙이거나 경로 사이에 파편(.net 등)을 끼워 넣는 행위는 절대 금지입니다. 
 3. 외부 링크(2개): {ext_link_instr}
 4. 내부 링크(2개): {int_link_instr}
-5. 모든 하이퍼링크는 target="_self" 속성을 포함해야 합니다.
+5. 모든 링크는 반드시 target="_self" 속성을 포함해야 합니다.
 
 [⚠️ 필수: 문서 구조화 및 제목 블록]
-1. 본문은 h2, h3, h4 제목 블록을 사용하여 논리적으로 구조화하세요. 모든 섹션은 구텐베르크 제목 블록으로 시작해야 합니다.
+1. 본문은 반드시 h2, h3, h4 제목 블록을 논리적으로 사용하세요. 모든 섹션의 시작은 제목 블록이어야 합니다. 타이틀 누락은 절대 안 됩니다.
 
-[⚠️ 절대 엄수: 중복 및 마커 금지]
-1. 반복 금지: 동일한 문장이나 단락을 절대 중복하여 사용하지 마세요. (200번 반복 현상 절대 금지)
-2. 마커 금지: 본문에 //paragraph와 같은 슬래시(/) 기반의 어떠한 주석도 넣지 마세요.
-3. 가독성: 한 문단(p 태그)은 4~6문장의 적절한 길이로 구성하세요.
+[⚠️ 절대 엄수: 중복 및 가독성]
+1. 반복 금지: 동일 문장이나 단락 반복은 루프 현상으로 간주되어 품질 점수가 하락합니다.
+2. 마커 금지: 본문에 //paragraph와 같은 슬래시 기반 주석을 절대 넣지 마세요.
+3. 가독성: 한 문단(p 태그)은 4~6문장의 적절한 길이로 구성하여 데스크탑과 모바일 가독성을 모두 확보하세요.
 
-[제목 작성 규칙]
-- 제목의 시작 부분에 '2026년'이나 '2월'을 넣지 마세요.
-- 연도 표기가 필요하다면 제목 맨 뒤에 (2026년 업데이트) 등의 형식으로 덧붙이세요.
+[제목 및 구성]
+- 제목 맨 앞에 연도(2026년 등)를 기계적으로 넣지 마세요. 필요시 제목 뒤에 배치하세요.
+- 3,000자 이상의 압도적인 정보량을 확보하고 상세한 FAQ를 포함하세요."""
 
-[본문 구성]
-- 3,000자 이상의 풍부한 정보량을 확보하고 FAQ 섹션을 포함하세요."""
-
-        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 링크 경로가 100% 정확히 삽입된 고품질 전문가 칼럼을 작성해줘.", system)
+        post_data = self.call_gemini(f"참고 뉴스 데이터:\n{news}\n\n위 데이터를 활용해 링크가 100% 무결하게 삽입된 전문가 칼럼을 작성해줘.", system)
         
         if not post_data or not post_data.get('content'):
             print("❌ 생성 실패")
             return
 
-        # 본문 물리적 정제 (도메인 중복 교정 로직 포함)
+        # 본문 물리적 정제 (중복 URL 경로 복구 로직 실행)
         post_data['content'] = self.clean_content(post_data['content'])
         
         img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
