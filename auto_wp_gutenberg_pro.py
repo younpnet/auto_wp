@@ -26,7 +26,7 @@ CONFIG = {
     "WP_APP_PASSWORD": os.environ.get("WP_APP_PASSWORD", ""),
     # 사용자 제공 정보를 바탕으로 최신 안정 버전인 gemini-3-flash로 업데이트
     # 항상 최신 버전을 유지하려면 "gemini-flash-latest"로 설정 가능합니다.
-    "TEXT_MODEL": "gemini-3-flash",
+    "TEXT_MODEL": "gemini-flash-latest",
     "IMAGE_MODEL": "imagen-4.0-generate-001",
     "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
     "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", "")
@@ -292,3 +292,4 @@ class WordPressAutoPoster:
 
 if __name__ == "__main__":
     WordPressAutoPoster().run()
+
