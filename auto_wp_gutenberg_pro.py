@@ -36,6 +36,7 @@ class WordPressAutoPoster:
         self.auth = base64.b64encode(user_pass.encode()).decode()
         self.headers = {"Authorization": f"Basic {self.auth}"}
         
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 초기화: 내부 링크 풀 구성 중...")
         # 1. 링크 데이터 수집
         self.ext_links = self.load_external_links(2)
         self.int_links = self.fetch_internal_links(2)
@@ -43,6 +44,7 @@ class WordPressAutoPoster:
         # 2. 링크 마커 맵
         self.link_map = {}
         self._setup_link_markers()
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 초기화 완료: 외부 {len(self.ext_links)}개, 내부 {len(self.int_links)}개 로드됨.")
 
     def fetch_internal_links(self, count=2):
         url = f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts"
@@ -53,7 +55,8 @@ class WordPressAutoPoster:
                 posts = res.json()
                 sampled = random.sample(posts, min(len(posts), count))
                 return [{"title": re.sub('<.*?>', '', p['title']['rendered']).strip(), "url": p['link'].strip()} for p in sampled]
-        except: pass
+        except Exception as e:
+            print(f"⚠️ 내부 링크 호출 실패: {e}")
         return []
 
     def load_external_links(self, count=2):
@@ -62,7 +65,8 @@ class WordPressAutoPoster:
                 with open('links.json', 'r', encoding='utf-8') as f:
                     links = json.load(f)
                     return random.sample(links, min(len(links), count))
-        except: pass
+        except Exception as e:
+            print(f"⚠️ 외부 링크 로드 실패 (links.json): {e}")
         return []
 
     def _setup_link_markers(self):
@@ -77,27 +81,19 @@ class WordPressAutoPoster:
             url = info['url']
             title = info['title']
             
-            # 워드프레스 버튼 블록 (광고/추천 스타일)
             button_html = (
                 f'\n<!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} -->\n'
                 f'<div class="wp-block-buttons"><!-- wp:button -->\n'
                 f'<div class="wp-block-button"><a class="wp-block-button__link" href="{url}" target="_self">{title}</a></div>\n'
                 f'<!-- /wp:button --></div>\n<!-- /wp:buttons -->\n'
             )
-            
-            # 문장 내 앵커 태그
             anchor_html = f'<a href="{url}" target="_self"><strong>{title}</strong></a>'
-            
-            # 마커가 단독 문단으로 존재하는지 확인 (구텐베르크 태그 포함 유연하게 매칭)
             standalone_regex = rf'(?:<!-- wp:paragraph -->\s*)?<p>\s*{re.escape(marker)}\s*</p>(?:\s*<!-- /wp:paragraph -->)?'
             
             if re.search(standalone_regex, content):
-                # 단독 줄에 마커가 있다면 버튼으로 치환
                 content = re.sub(standalone_regex, button_html, content)
             else:
-                # 문장 내부에 섞여 있다면 앵커 태그로 치환
                 content = content.replace(marker, anchor_html)
-                
         return content
 
     def clean_structure(self, content):
@@ -125,56 +121,49 @@ class WordPressAutoPoster:
         return final_content
 
     def generate_image(self, title, excerpt):
-        """본문 내용과 맥락에 맞춰 다양한 구도와 인물의 이미지를 생성합니다."""
-        print(f"🎨 이미지 다변화 생성 중: {title}")
+        print(f"🎨 이미지 생성 요청 중... (컨셉 분석)")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         
         scenarios = [
             f"A warm, professional consultation scene: A South Korean financial advisor in a clean suit is explaining documents to an attentive elderly couple in a bright, modern office.",
-            f"A content middle-aged South Korean man in his 50s, smiling confidently while looking at a tablet showing a retirement plan, sitting in a stylish Korean cafe.",
-            f"Close-up of South Korean senior's hands holding a financial report and a pair of glasses, with a soft-focus background of a sun-drenched modern living room.",
-            f"A middle-aged South Korean woman looking relaxed and happy, sitting in a bright home office, signifying financial freedom and security.",
-            f"An elderly South Korean couple in their 70s walking together in a beautiful park with a peaceful expression, symbolizing a secure retirement life."
+            f"A content middle-aged South Korean man in his 50s, smiling confidently while looking at a tablet showing a retirement plan.",
+            f"An elderly South Korean couple in their 70s walking together in a beautiful park with a peaceful expression.",
+            f"Close-up of South Korean senior's hands holding a financial report, symbolizing security."
         ]
         
         selected_scenario = random.choice(scenarios)
         image_prompt = (
             f"High-end editorial photography for a finance blog. "
-            f"Concept: {selected_scenario} Article context: {title}. "
-            f"Visual Style: Photorealistic, cinematic warm lighting, high quality, 16:9 aspect ratio. "
-            f"CRITICAL: NO TEXT, NO WORDS, NO NUMBERS in the image."
+            f"Concept: {selected_scenario} Context: {title}. "
+            f"Style: Photorealistic, cinematic lighting, 16:9 aspect ratio, NO TEXT."
         )
         
         payload = {"instances": [{"prompt": image_prompt}], "parameters": {"sampleCount": 1}}
         try:
             res = requests.post(url, json=payload, timeout=120)
-            if res.status_code == 200: return res.json()['predictions'][0]['bytesBase64Encoded']
-        except: pass
+            if res.status_code == 200: 
+                print("✅ 이미지 데이터 생성 완료.")
+                return res.json()['predictions'][0]['bytesBase64Encoded']
+            else:
+                print(f"❌ 이미지 생성 실패 (상태코드: {res.status_code})")
+        except Exception as e:
+            print(f"⚠️ 이미지 생성 타임아웃 또는 오류: {e}")
         return None
 
     def call_gemini(self, news):
+        print(f"🤖 AI 본문 생성 시작... (모델: {CONFIG['TEXT_MODEL']})")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         
-        marker_desc = ""
-        for k, v in self.link_map.items():
-            marker_desc += f"- {k} (제목: {v['title']})\n"
-            
+        marker_desc = "\n".join([f"- {k} (제목: {v['title']})" for k, v in self.link_map.items()])
         system_instruction = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 통찰력 있는 전문가 칼럼을 작성하세요.
-
-[⚠️ 링크 마커 배치 전략 - 필수 규칙]
-1. 본문에 URL이나 <a> 태그를 직접 작성하지 말고 아래 제공된 마커들을 반드시 포함하세요:
+[⚠️ 링크 마커 수칙]
+1. URL이나 <a> 태그 없이 제공된 마커들만 문맥에 맞게 삽입하세요:
 {marker_desc}
-2. 배치 기준:
-   - **문맥과 관련이 깊은 경우**: 문장 속에 마커를 단어처럼 넣으세요. (예: ...을 위해 [[외부추천_0]] 내용을 확인하세요.) -> 텍스트 링크로 변환됩니다.
-   - **내용과 직접 관련은 없지만 유익한 정보인 경우**: 단락과 단락 사이, 혹은 특정 섹션 끝에 마커만 한 줄로 따로 적으세요. (예: <p>[[외부추천_1]]</p>) -> 버튼으로 변환됩니다.
-
-[⚠️ 필수: 문서 구조]
-1. 모든 섹션은 구텐베르크 h2, h3 제목 블록으로 시작하세요.
-2. 문단 가독성: 한 문단(p 태그)은 4~6문장으로 풍부하게 구성하여 데스크탑/모바일 가독성을 모두 잡으세요.
-3. 중복 방지: 동일한 수치나 정보를 반복하지 마세요."""
+[⚠️ 구조 지침]
+- 구텐베르크 h2, h3 블록 사용. 문단 가독성(4~6문장). 중복 절대 금지."""
 
         payload = {
-            "contents": [{"parts": [{"text": f"뉴스 데이터:\n{news}\n\n위 데이터를 기반으로 마커가 전략적으로 배치된 전문가 칼럼을 작성해줘."}]}],
+            "contents": [{"parts": [{"text": f"참고 데이터:\n{news}\n\n위 데이터를 기반으로 마커가 배치된 고품질 칼럼을 작성해줘."}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
             "generationConfig": {
                 "responseMimeType": "application/json",
@@ -194,12 +183,18 @@ class WordPressAutoPoster:
         }
         try:
             res = requests.post(url, json=payload, timeout=300)
-            if res.status_code == 200: return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
-        except: pass
+            if res.status_code == 200: 
+                print("✅ AI 본문 생성 완료.")
+                return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
+            else:
+                print(f"❌ AI 생성 실패 (상태코드: {res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"⚠️ AI 생성 타임아웃 또는 오류: {e}")
         return None
 
     def upload_media(self, img_b64):
         if not img_b64: return None
+        print("📤 워드프레스 미디어 업로드 중...")
         raw_data = base64.b64decode(img_b64)
         if PIL_AVAILABLE:
             try:
@@ -210,35 +205,54 @@ class WordPressAutoPoster:
             except: pass
         files = {'file': (f"nps_pro_{int(time.time())}.jpg", raw_data, "image/jpeg")}
         res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=self.headers, files=files, timeout=60)
-        return res.json().get('id') if res.status_code == 201 else None
+        if res.status_code == 201:
+            media_id = res.json().get('id')
+            print(f"✅ 미디어 업로드 성공 (ID: {media_id})")
+            return media_id
+        print(f"❌ 미디어 업로드 실패: {res.text}")
+        return None
 
     def get_or_create_tags(self, tags_str):
         if not tags_str: return []
         tag_ids = []
         for name in [t.strip() for t in tags_str.split(',')]:
             try:
-                res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags", headers=self.headers, json={"name": name})
+                res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags", headers=self.headers, json={"name": name}, timeout=10)
                 if res.status_code in [200, 201]: tag_ids.append(res.json()['id'])
                 else:
-                    search = requests.get(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags?search={name}", headers=self.headers)
-                    if search.json(): tag_ids.append(search.json()[0]['id'])
+                    search = requests.get(f"{CONFIG['WP_URL']}/wp-json/wp/v2/tags?search={name}", headers=self.headers, timeout=10)
+                    if search.status_code == 200 and search.json(): tag_ids.append(search.json()[0]['id'])
             except: continue
         return tag_ids
 
     def run(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 지능형 링크 배치 및 이미지 다변화 실행 ---")
-        news = self.search_naver_news()
-        post_data = self.call_gemini(news)
-        if not post_data: return
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 고품질 포스팅 자동 생성 프로세스 시작 ---")
         
-        # 1. 본문 정제 및 마커 주입 (문맥 판별 치환)
+        # 1. 네이버 뉴스 검색
+        news = self.search_naver_news()
+        
+        # 2. 콘텐츠 생성
+        post_data = self.call_gemini(news)
+        if not post_data:
+            print("❌ 종료: AI 콘텐츠 생성에 실패했습니다.")
+            return
+        
+        # 3. 본문 정제 및 마커 치환
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 본문 텍스트 정제 및 링크 주입 중...")
         content = self.clean_structure(post_data['content'])
         content = self.inject_smart_links(content)
         
-        # 2. 미디어 및 메타데이터 처리
-        img_id = self.upload_media(self.generate_image(post_data['title'], post_data['excerpt']))
+        # 4. 이미지 생성 및 업로드
+        img_id = None
+        img_b64 = self.generate_image(post_data['title'], post_data['excerpt'])
+        if img_b64:
+            img_id = self.upload_media(img_b64)
+        
+        # 5. 태그 처리
         tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
         
+        # 6. 최종 발행
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 워드프레스 발행 요청 중...")
         payload = {
             "title": post_data['title'],
             "content": content,
@@ -248,20 +262,29 @@ class WordPressAutoPoster:
             "tags": tag_ids
         }
         res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers={"Authorization": f"Basic {self.auth}", "Content-Type": "application/json"}, json=payload, timeout=60)
-        if res.status_code == 201: print(f"🎉 발행 성공: {post_data['title']}")
-        else: print(f"❌ 실패: {res.text}")
+        
+        if res.status_code == 201:
+            print(f"🎉 성공: 포스팅이 완료되었습니다! (제목: {post_data['title']})")
+        else:
+            print(f"❌ 최종 발행 실패: {res.text}")
 
     def search_naver_news(self):
-        queries = ["국민연금 개혁 전략", "2026 노후 설계", "기초연금 변화"]
+        print(f"🔍 네이버 최신 뉴스 검색 중...")
+        queries = ["국민연금 수령 전략", "2026 연금 개혁", "노후 자산 보호"]
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {"X-Naver-Client-Id": CONFIG["NAVER_CLIENT_ID"], "X-Naver-Client-Secret": CONFIG["NAVER_CLIENT_SECRET"]}
         params = {"query": random.choice(queries), "display": 10, "sort": "sim"}
         try:
             res = requests.get(url, headers=headers, params=params, timeout=20)
             if res.status_code == 200:
-                return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}" for i in res.json().get('items', [])])
-        except: pass
-        return "국민연금 최신 동향"
+                items = res.json().get('items', [])
+                print(f"✅ 뉴스 {len(items)}건 수집 완료.")
+                return "\n".join([f"- {re.sub('<.*?>', '', i['title'])}" for i in items])
+            else:
+                print(f"⚠️ 네이버 API 오류 (상태코드: {res.status_code})")
+        except Exception as e:
+            print(f"⚠️ 뉴스 검색 실패: {e}")
+        return "최근 국민연금 주요 동향 및 노후 준비 전략"
 
 if __name__ == "__main__":
     WordPressAutoPoster().run()
