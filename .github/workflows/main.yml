@@ -1,3 +1,5 @@
+permissions:
+  contents: write
 name: Daily WordPress Auto Post
 
 on:
