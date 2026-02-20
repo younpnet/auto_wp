@@ -30,12 +30,13 @@ CONFIG = {
     "IMAGE_MODEL": "imagen-4.0-generate-001",
     "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
     "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", ""),
-    # 외부 링크 수집용 RSS 리스트
+    # 외부 링크 수집용 RSS 리스트 (요청하신 네이버 블로그 피드 추가)
     "RSS_URLS": [
         "https://virz.net/feed",
         "https://121913.tistory.com/rss",
         "https://exciting.tistory.com/rss",
-        "https://sleepyourmoney.net/feed"
+        "https://sleepyourmoney.net/feed",
+        "https://rss.blog.naver.com/moviepotal.xml"
     ]
 }
 
@@ -47,7 +48,7 @@ class WordPressAutoPoster:
         self.auth = base64.b64encode(user_pass.encode()).decode()
         self.headers = {"Authorization": f"Basic {self.auth}"}
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 시스템 초기화 및 이미지 최적화 모드 가동...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 멀티 피드 시스템 초기화 및 수집 시작...")
         
         # 1. 외부 사이트 RSS 동기화
         self.sync_multiple_rss_feeds()
@@ -68,6 +69,7 @@ class WordPressAutoPoster:
                 sys.exit(1)
 
     def sync_multiple_rss_feeds(self):
+        """설정된 모든 RSS 피드에서 새로운 외부 링크를 수집합니다."""
         print(f"📡 총 {len(CONFIG['RSS_URLS'])}개의 외부 RSS 피드 동기화 중...")
         existing_links = []
         if os.path.exists('links.json'):
@@ -79,23 +81,37 @@ class WordPressAutoPoster:
         total_added = 0
 
         for rss_url in CONFIG['RSS_URLS']:
+            print(f"🔗 수집 대상: {rss_url}")
             try:
                 res = requests.get(rss_url, timeout=20)
-                if res.status_code != 200: continue
+                if res.status_code != 200:
+                    print(f"  ⚠️ 접속 실패 (코드: {res.status_code})")
+                    continue
                 root = ET.fromstring(res.content)
-                for item in root.findall('.//item'):
-                    title = item.find('title').text.strip()
-                    link = item.find('link').text.strip()
-                    if link not in existing_urls:
-                        existing_links.append({"title": title, "url": link})
-                        existing_urls.add(link)
-                        total_added += 1
-            except: continue
+                feed_added = 0
+                
+                # 티스토리/워드프레스(item) 및 일반 RSS 구조 대응
+                items = root.findall('.//item')
+                for item in items:
+                    title_elem = item.find('title')
+                    link_elem = item.find('link')
+                    if title_elem is not None and link_elem is not None:
+                        title = title_elem.text.strip()
+                        link = link_elem.text.strip()
+                        if link not in existing_urls:
+                            existing_links.append({"title": title, "url": link})
+                            existing_urls.add(link)
+                            feed_added += 1
+                            total_added += 1
+                if feed_added > 0:
+                    print(f"  ✅ {feed_added}개의 새로운 링크를 발견했습니다.")
+            except Exception as e:
+                print(f"  ⚠️ 처리 중 오류: {e}")
 
         if total_added > 0:
             with open('links.json', 'w', encoding='utf-8') as f:
                 json.dump(existing_links, f, ensure_ascii=False, indent=4)
-            print(f"✅ 외부 링크 {total_added}개 추가 완료.")
+            print(f"🎉 동기화 완료: 총 {total_added}개의 링크가 links.json에 추가되었습니다.")
 
     def fetch_internal_links(self, count=2):
         url = f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts"
@@ -127,9 +143,11 @@ class WordPressAutoPoster:
             self.link_map[f"[[외부추천_{i}]]"] = link
 
     def inject_smart_links(self, content):
+        """마커를 분석하여 앵커 또는 버튼으로 정밀 치환 (내부/외부 통합 관리)"""
         for marker, info in self.link_map.items():
             url = info['url']
             title = info['title']
+            
             button_html = (
                 f'\n<!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} -->\n'
                 f'<div class="wp-block-buttons"><!-- wp:button {{"backgroundColor":"vivid-cyan-blue","borderRadius":5}} -->\n'
@@ -138,6 +156,7 @@ class WordPressAutoPoster:
             )
             anchor_html = f'<a href="{url}" target="_self"><strong>{title}</strong></a>'
             standalone_regex = rf'<!-- wp:paragraph -->\s*<p>\s*{re.escape(marker)}\s*</p>\s*<!-- /wp:paragraph -->'
+            
             if re.search(standalone_regex, content):
                 content = re.sub(standalone_regex, button_html, content)
             else:
@@ -167,16 +186,25 @@ class WordPressAutoPoster:
         return "".join(refined_output).strip()
 
     def generate_image(self, title, excerpt):
-        print(f"🎨 이미지 다변화 생성 중...")
+        """본문 내용과 맥락에 맞춰 한국인 인물 및 배경 이미지를 생성합니다."""
+        print(f"🎨 이미지 다변화 생성 중 (한국인 피사체 강조)...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
+        
         scenarios = [
-            f"A South Korean financial advisor explaining documents to a middle-aged couple in a sunlit modern office.",
-            f"A confident South Korean man in his 50s smiling while reviewing retirement plans on a tablet.",
-            f"Close-up of a senior's hands holding a financial report and glasses.",
-            f"An elderly South Korean couple walking happily in a beautiful scenic park."
+            f"A professional South Korean financial advisor explaining pension documents to a middle-aged South Korean couple in a sunlit modern Seoul office.",
+            f"A confident South Korean man in his 50s smiling while reviewing retirement plans on a tablet in a modern Korean cafe.",
+            f"Close-up of a South Korean senior's hands holding a detailed South Korean National Pension report and glasses.",
+            f"A happy elderly South Korean couple in their 70s walking together in a beautiful scenic Korean park during autumn."
         ]
+        
         selected_scenario = random.choice(scenarios)
-        image_prompt = f"Professional editorial photography: {selected_scenario} Context: {title}. Cinematic lighting, 16:9, NO TEXT."
+        image_prompt = (
+            f"High-end editorial photography for a finance column. "
+            f"Concept: {selected_scenario} Context: {title}. "
+            f"Visual Style: Photorealistic, cinematic lighting, 16:9 aspect ratio. "
+            f"CRITICAL: NO TEXT, NO LETTERS, NO WORDS in the image."
+        )
+        
         payload = {"instances": [{"prompt": image_prompt}], "parameters": {"sampleCount": 1}}
         try:
             res = requests.post(url, json=payload, timeout=120)
@@ -191,21 +219,17 @@ class WordPressAutoPoster:
         print("📤 이미지 JPG 변환 및 최적화 업로드 중...")
         raw_data = base64.b64decode(b64_data)
         
-        # Pillow를 사용한 최적화
         if PIL_AVAILABLE:
             try:
                 img = Image.open(io.BytesIO(raw_data))
-                # PNG 투명도 대응 및 RGB 변환
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
-                
                 output = io.BytesIO()
-                # 70% 품질로 JPEG 저장
                 img.save(output, format="JPEG", quality=70, optimize=True)
                 final_data = output.getvalue()
                 print("✅ JPG 70% 압축 완료")
             except Exception as e:
-                print(f"⚠️ 이미지 최적화 실패 (원본 데이터 유지): {e}")
+                print(f"⚠️ 이미지 최적화 실패: {e}")
                 final_data = raw_data
         else:
             final_data = raw_data
@@ -218,6 +242,7 @@ class WordPressAutoPoster:
         return None
 
     def get_longtail_keyword(self):
+        """실시간 롱테일 키워드 발굴 로직"""
         print(f"🔍 실시간 롱테일 키워드 분석 중...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         prompt = "대한민국 국민연금과 관련하여 2026년 기준 사람들이 가장 궁금해할 구체적인 롱테일 키워드를 하나 선정해 주제만 짧게 답해줘."
@@ -229,6 +254,7 @@ class WordPressAutoPoster:
         return "국민연금 수령액 늘리는 실전 전략"
 
     def call_gemini_with_search(self, target_topic):
+        """Google Search Grounding 기반 심층 본문 및 지능형 제목 생성"""
         print(f"🤖 구글 검색 기반 심층 콘텐츠 생성 중 (3,000자 목표)...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         marker_desc = "\n".join([f"- {k}: {v['title']}" for k, v in self.link_map.items()])
@@ -287,7 +313,7 @@ class WordPressAutoPoster:
         return tag_ids
 
     def run(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 지능형 포스팅 및 이미지 최적화 모드 실행 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 멀티 피드 및 이미지 최적화 포스팅 시작 ---")
         target_topic = self.get_longtail_keyword()
         post_data = self.call_gemini_with_search(target_topic)
         if not post_data: return
