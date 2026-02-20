@@ -25,7 +25,8 @@ CONFIG = {
     "WP_URL": os.environ.get("WP_URL", "").rstrip("/"),
     "WP_USERNAME": os.environ.get("WP_USERNAME", "admin"),
     "WP_APP_PASSWORD": os.environ.get("WP_APP_PASSWORD", ""),
-    "TEXT_MODEL": "gemini-3-flash",  # 최신 Flash 모델 사용
+    # 요청하신 대로 최신 Flash 모델을 항상 가리키는 별칭으로 변경
+    "TEXT_MODEL": "gemini-flash-latest", 
     "IMAGE_MODEL": "imagen-4.0-generate-001",
     "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
     "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", "")
@@ -39,7 +40,7 @@ class WordPressAutoPoster:
         self.auth = base64.b64encode(user_pass.encode()).decode()
         self.headers = {"Authorization": f"Basic {self.auth}"}
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 고도화 시스템 초기화 중...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 시스템 초기화 중...")
         # 1. 링크 데이터 수집
         self.ext_links = self.load_external_links(2)
         self.int_links = self.fetch_internal_links(2)
@@ -94,7 +95,7 @@ class WordPressAutoPoster:
             button_html = (
                 f'\n<!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} -->\n'
                 f'<div class="wp-block-buttons"><!-- wp:button {{"backgroundColor":"vivid-cyan-blue","borderRadius":5}} -->\n'
-                f'<div class="wp-block-button"><a class="wp-block-button__link has-vivid-cyan-blue-background-color has-background wp-element-button" href="{url}" target="_self">{title}</a></div>\n'
+                f'<div class="wp-block-button"><a class="wp-block-button__link has-vivid-cyan-blue-background-color has-background wp-element-button" href="{url}" target="_self" rel="noopener noreferrer">{title}</a></div>\n'
                 f'<!-- /wp:button --></div>\n<!-- /wp:buttons -->\n'
             )
             anchor_html = f'<a href="{url}" target="_self"><strong>{title}</strong></a>'
@@ -151,8 +152,8 @@ class WordPressAutoPoster:
         return None
 
     def get_longtail_keyword(self):
-        """구글 검색 데이터를 고려하여 독자들이 실제로 궁금해하는 틈새 키워드를 발굴합니다."""
-        print(f"🔍 실시간 롱테일 키워드 분석 중...")
+        """독자들이 실제로 궁금해하는 틈새 키워드를 발굴합니다."""
+        print(f"🔍 실시간 롱테일 키워드 분석 중 (모델: {CONFIG['TEXT_MODEL']})...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         prompt = (
             "2026년 대한민국 국민연금과 관련하여 사람들이 구글이나 네이버에서 가장 많이 검색하지만 "
@@ -189,7 +190,7 @@ class WordPressAutoPoster:
 {marker_desc}
 
 [⚠️ 분량 및 퀄리티]
-1. 분량: 2,500자~3,000자의 압도적인 정보량.
+1. 분량: 공백 포함 2,500자~3,000자의 압도적인 정보량.
 2. 전문성: 소제목 6개 이상. 복잡한 비교는 반드시 <table> 블록 사용.
 3. 중복 금지 및 인사말 금지."""
 
