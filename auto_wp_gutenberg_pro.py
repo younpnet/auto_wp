@@ -10,13 +10,13 @@ import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-# 이미지 처리를 위한 PIL 라이브러리
+# 이미지 처리를 위한 PIL 라이브러리 (JPG 변환 및 압축용)
 try:
     from PIL import Image
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다.")
+    print("⚠️ 경고: PIL(Pillow) 라이브러리가 설치되지 않았습니다. 'pip install Pillow'가 필요합니다.")
 
 # ==============================================================================
 # 환경 변수 설정
@@ -47,7 +47,7 @@ class WordPressAutoPoster:
         self.auth = base64.b64encode(user_pass.encode()).decode()
         self.headers = {"Authorization": f"Basic {self.auth}"}
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 시스템 초기화 및 지능형 포스팅 모드 가동...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 시스템 초기화 및 이미지 최적화 모드 가동...")
         
         # 1. 외부 사이트 RSS 동기화
         self.sync_multiple_rss_feeds()
@@ -68,7 +68,6 @@ class WordPressAutoPoster:
                 sys.exit(1)
 
     def sync_multiple_rss_feeds(self):
-        """설정된 모든 RSS 피드에서 새로운 외부 링크를 수집합니다."""
         print(f"📡 총 {len(CONFIG['RSS_URLS'])}개의 외부 RSS 피드 동기화 중...")
         existing_links = []
         if os.path.exists('links.json'):
@@ -128,11 +127,9 @@ class WordPressAutoPoster:
             self.link_map[f"[[외부추천_{i}]]"] = link
 
     def inject_smart_links(self, content):
-        """마커를 분석하여 앵커 또는 버튼으로 정밀 치환 (내부/외부 통합 관리)"""
         for marker, info in self.link_map.items():
             url = info['url']
             title = info['title']
-            
             button_html = (
                 f'\n<!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} -->\n'
                 f'<div class="wp-block-buttons"><!-- wp:button {{"backgroundColor":"vivid-cyan-blue","borderRadius":5}} -->\n'
@@ -141,7 +138,6 @@ class WordPressAutoPoster:
             )
             anchor_html = f'<a href="{url}" target="_self"><strong>{title}</strong></a>'
             standalone_regex = rf'<!-- wp:paragraph -->\s*<p>\s*{re.escape(marker)}\s*</p>\s*<!-- /wp:paragraph -->'
-            
             if re.search(standalone_regex, content):
                 content = re.sub(standalone_regex, button_html, content)
             else:
@@ -171,7 +167,7 @@ class WordPressAutoPoster:
         return "".join(refined_output).strip()
 
     def generate_image(self, title, excerpt):
-        print(f"🎨 대표 이미지 다변화 생성 중...")
+        print(f"🎨 이미지 다변화 생성 중...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         scenarios = [
             f"A South Korean financial advisor explaining documents to a middle-aged couple in a sunlit modern office.",
@@ -188,6 +184,39 @@ class WordPressAutoPoster:
         except: pass
         return None
 
+    def process_and_upload_image(self, b64_data, title):
+        """이미지를 JPG 70% 품질로 변환 및 최적화하여 업로드합니다."""
+        if not b64_data: return None
+        
+        print("📤 이미지 JPG 변환 및 최적화 업로드 중...")
+        raw_data = base64.b64decode(b64_data)
+        
+        # Pillow를 사용한 최적화
+        if PIL_AVAILABLE:
+            try:
+                img = Image.open(io.BytesIO(raw_data))
+                # PNG 투명도 대응 및 RGB 변환
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                
+                output = io.BytesIO()
+                # 70% 품질로 JPEG 저장
+                img.save(output, format="JPEG", quality=70, optimize=True)
+                final_data = output.getvalue()
+                print("✅ JPG 70% 압축 완료")
+            except Exception as e:
+                print(f"⚠️ 이미지 최적화 실패 (원본 데이터 유지): {e}")
+                final_data = raw_data
+        else:
+            final_data = raw_data
+
+        files = {'file': (f"nps_pro_{int(time.time())}.jpg", final_data, "image/jpeg")}
+        media_res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=self.headers, files=files, timeout=60)
+        
+        if media_res.status_code == 201:
+            return media_res.json().get('id')
+        return None
+
     def get_longtail_keyword(self):
         print(f"🔍 실시간 롱테일 키워드 분석 중...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
@@ -200,11 +229,8 @@ class WordPressAutoPoster:
         return "국민연금 수령액 늘리는 실전 전략"
 
     def call_gemini_with_search(self, target_topic):
-        """Google Search Grounding 기반 심층 본문 및 중복 제거 링크 지침 적용"""
         print(f"🤖 구글 검색 기반 심층 콘텐츠 생성 중 (3,000자 목표)...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
-        
-        # 링크 중복 방지를 위해 마커 뒤의 제목 설명을 '참조용'으로만 변경
         marker_desc = "\n".join([f"- {k}: {v['title']}" for k, v in self.link_map.items()])
         
         system_instruction = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 실시간 데이터를 바탕으로 독자의 의도를 완벽히 해결하는 3,000자 초장문 전문가 칼럼을 작성하세요.
@@ -213,11 +239,10 @@ class WordPressAutoPoster:
 1. 제목 맨 앞에 '2026년'이나 '2월'을 절대 배치하지 마세요. 
 2. 연도(2026년) 문구는 문맥적으로 자연스럽고 독자의 신뢰를 높이는 데 필요할 때만 선택적으로 포함하세요.
 
-[⚠️ 하이퍼링크 마커 삽입 규칙 - 중요]
-1. 아래 제공된 마커들({list(self.link_map.keys())})만 본문 적절한 위치에 삽입하세요.
+[⚠️ 하이퍼링크 마커 삽입 규칙]
+1. 아래 제공된 마커들({list(self.link_map.keys())})만 본문에 삽입하세요.
 {marker_desc}
-2. **절대 금기 사항**: 마커 옆의 제목 설명(예: (제목: ...))을 본문에 같이 적지 마세요. 본문에는 오직 '[[외부추천_0]]'과 같은 마커 코드만 단독으로 들어가야 합니다. 
-3. 마커는 문장 속 혹은 별도 단락에 단독으로 배치할 수 있습니다.
+2. 마커 옆의 제목 설명을 본문에 같이 적지 마세요. 본문에는 오직 '[[외부추천_0]]'과 같은 마커 코드만 들어가야 합니다.
 
 [⚠️ 구텐베르크 블록 표준] 모든 본문 요소는 반드시 wp:paragraph, wp:heading h2/h3, wp:list, wp:table 마커로 감싸세요.
 [⚠️ 분량] 공백 포함 2,500자~3,000자의 압도적인 정보량을 제공하세요."""
@@ -262,22 +287,19 @@ class WordPressAutoPoster:
         return tag_ids
 
     def run(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 지능형 포스팅 및 링크 중복 제거 모드 실행 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 지능형 포스팅 및 이미지 최적화 모드 실행 ---")
         target_topic = self.get_longtail_keyword()
         post_data = self.call_gemini_with_search(target_topic)
         if not post_data: return
         
         content = self.clean_structure(post_data['content'])
-        # 스마트 링크 주입 로직 실행 (중복 텍스트 발생 원천 차단)
         content = self.inject_smart_links(content)
         
+        # 이미지 생성 및 JPG 70% 최적화 업로드
         img_id = None
         img_b64 = self.generate_image(post_data['title'], post_data['excerpt'])
         if img_b64:
-            raw_data = base64.b64decode(img_b64)
-            files = {'file': (f"nps_pro_{int(time.time())}.jpg", raw_data, "image/jpeg")}
-            media_res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/media", headers=self.headers, files=files, timeout=60)
-            if media_res.status_code == 201: img_id = media_res.json().get('id')
+            img_id = self.process_and_upload_image(img_b64, post_data['title'])
         
         tag_ids = self.get_or_create_tags(post_data.get('tags', ''))
         
