@@ -7,6 +7,7 @@ import os
 import io
 import random
 import sys
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
 # 이미지 처리를 위한 PIL 라이브러리
@@ -25,11 +26,15 @@ CONFIG = {
     "WP_URL": os.environ.get("WP_URL", "").rstrip("/"),
     "WP_USERNAME": os.environ.get("WP_USERNAME", "admin"),
     "WP_APP_PASSWORD": os.environ.get("WP_APP_PASSWORD", ""),
-    # 요청하신 대로 최신 Flash 모델을 항상 가리키는 별칭으로 변경
     "TEXT_MODEL": "gemini-flash-latest", 
     "IMAGE_MODEL": "imagen-4.0-generate-001",
     "NAVER_CLIENT_ID": os.environ.get("NAVER_CLIENT_ID", ""),
-    "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", "")
+    "NAVER_CLIENT_SECRET": os.environ.get("NAVER_CLIENT_SECRET", ""),
+    # 여러 사이트의 RSS 피드 URL을 리스트 형태로 관리합니다.
+    "RSS_URLS": [
+        "https://younp.net/feed",
+        "https://virz.net/feed"  # 요청하신 새로운 피드 주소를 추가했습니다.
+    ]
 }
 
 class WordPressAutoPoster:
@@ -40,12 +45,16 @@ class WordPressAutoPoster:
         self.auth = base64.b64encode(user_pass.encode()).decode()
         self.headers = {"Authorization": f"Basic {self.auth}"}
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 시스템 초기화 중...")
-        # 1. 링크 데이터 수집
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 멀티 피드 시스템 초기화 중...")
+        
+        # 1. 여러 RSS 피드를 순회하며 links.json 업데이트
+        self.sync_multiple_rss_feeds()
+        
+        # 2. 통합된 링크 데이터 로드
         self.ext_links = self.load_external_links(2)
         self.int_links = self.fetch_internal_links(2)
         
-        # 2. 링크 마커 맵 생성
+        # 3. 링크 마커 맵 생성
         self.link_map = {}
         self._setup_link_markers()
 
@@ -56,6 +65,59 @@ class WordPressAutoPoster:
             if not CONFIG.get(key):
                 print(f"❌ 오류: {key} 환경 변수가 설정되지 않았습니다.")
                 sys.exit(1)
+
+    def sync_multiple_rss_feeds(self):
+        """설정된 모든 RSS 피드에서 최신 포스트를 가져와 links.json을 업데이트합니다."""
+        print(f"📡 총 {len(CONFIG['RSS_URLS'])}개의 RSS 피드 동기화 시작...")
+        
+        # 기존 links.json 로드
+        existing_links = []
+        if os.path.exists('links.json'):
+            with open('links.json', 'r', encoding='utf-8') as f:
+                try:
+                    existing_links = json.load(f)
+                except json.JSONDecodeError:
+                    existing_links = []
+        
+        existing_urls = {link['url'] for link in existing_links}
+        total_added = 0
+
+        for rss_url in CONFIG['RSS_URLS']:
+            print(f"🔗 수집 중: {rss_url}")
+            try:
+                res = requests.get(rss_url, timeout=20)
+                if res.status_code != 200:
+                    print(f"  ⚠️ 피드 접근 실패 (코드: {res.status_code})")
+                    continue
+
+                root = ET.fromstring(res.content)
+                feed_added = 0
+                for item in root.findall('.//item'):
+                    title_elem = item.find('title')
+                    link_elem = item.find('link')
+                    
+                    if title_elem is not None and link_elem is not None:
+                        title = title_elem.text.strip()
+                        link = link_elem.text.strip()
+                        
+                        if link not in existing_urls:
+                            existing_links.append({"title": title, "url": link})
+                            existing_urls.add(link)
+                            feed_added += 1
+                            total_added += 1
+                
+                if feed_added > 0:
+                    print(f"  ✅ {feed_added}개의 새로운 링크를 찾았습니다.")
+            except Exception as e:
+                print(f"  ⚠️ '{rss_url}' 처리 중 오류 발생: {e}")
+
+        # 변경사항이 있을 때만 파일 저장
+        if total_added > 0:
+            with open('links.json', 'w', encoding='utf-8') as f:
+                json.dump(existing_links, f, ensure_ascii=False, indent=4)
+            print(f"🎉 동기화 완료: 총 {total_added}개의 링크가 추가되었습니다.")
+        else:
+            print("ℹ️ 모든 피드가 최신 상태입니다. 추가된 링크가 없습니다.")
 
     def fetch_internal_links(self, count=2):
         url = f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts"
@@ -71,13 +133,15 @@ class WordPressAutoPoster:
         return []
 
     def load_external_links(self, count=2):
+        """links.json(통합 데이터베이스)에서 무작위 외부 링크를 가져옵니다."""
         try:
             if os.path.exists('links.json'):
                 with open('links.json', 'r', encoding='utf-8') as f:
                     links = json.load(f)
+                    if not links: return []
                     return random.sample(links, min(len(links), count))
         except Exception as e:
-            print(f"⚠️ 외부 링크 로드 실패 (links.json): {e}")
+            print(f"⚠️ links.json 로드 실패: {e}")
         return []
 
     def _setup_link_markers(self):
@@ -173,7 +237,7 @@ class WordPressAutoPoster:
 
     def call_gemini_with_search(self, target_topic):
         """Google Search Grounding을 사용하여 정보 밀도가 높은 본문을 생성합니다."""
-        print(f"🤖 구글 검색 기반 심층 콘텐츠 생성 중 (모델: {CONFIG['TEXT_MODEL']})...")
+        print(f"🤖 구글 검색 기반 심층 콘텐츠 생성 중...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
         
         marker_desc = "\n".join([f"- {k} (제목: {v['title']})" for k, v in self.link_map.items()])
@@ -181,8 +245,8 @@ class WordPressAutoPoster:
         system_instruction = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 2026년 시점의 데이터를 바탕으로 검색 의도를 완벽히 해결하는 3,000자 초장문 칼럼을 작성하세요.
 
 [⚠️ 구글 검색 활용 필수]
-- 당신은 도구(Google Search)를 사용하여 해당 주제에 대한 최신 규정, 실제 사례, 수치화된 데이터를 실시간으로 조사한 뒤 이를 바탕으로 글을 써야 합니다.
-- 독자들이 읽어야 할 가치 있는 구체적인 정보를 제공하세요. (예: 실제 시뮬레이션 결과, 제도적 함정, 절세 전략 등)
+- 당신은 도구(Google Search)를 사용하여 최신 규정, 실제 사례, 수치화된 데이터를 실시간으로 조사한 뒤 이를 바탕으로 글을 써야 합니다.
+- 독자들이 읽어야 할 가치 있는 구체적인 정보를 제공하세요.
 
 [⚠️ 구텐베르크 블록 형식]
 1. 모든 본문 요소는 반드시 구텐베르크 마커로 감싸야 합니다 (paragraph, heading h2/h3, list, table).
@@ -190,14 +254,14 @@ class WordPressAutoPoster:
 {marker_desc}
 
 [⚠️ 분량 및 퀄리티]
-1. 분량: 공백 포함 2,500자~3,000자의 압도적인 정보량.
+1. 분량: 2,500자~3,000자의 압도적인 정보량.
 2. 전문성: 소제목 6개 이상. 복잡한 비교는 반드시 <table> 블록 사용.
 3. 중복 금지 및 인사말 금지."""
 
         payload = {
-            "contents": [{"parts": [{"text": f"선정된 주제: '{target_topic}'\n\n이 주제에 대해 구글 검색을 통해 심층 분석하여 독자가 고민을 해결할 수 있는 완성도 높은 칼럼을 작성해줘."}]}],
+            "contents": [{"parts": [{"text": f"선정된 주제: '{target_topic}'\n\n이 주제에 대해 구글 검색을 통해 심층 분석하여 완성도 높은 칼럼을 작성해줘."}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
-            "tools": [{"google_search": {}}], # 구글 검색 기능 활성화
+            "tools": [{"google_search": {}}],
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "temperature": 0.7,
@@ -219,7 +283,7 @@ class WordPressAutoPoster:
             if res.status_code == 200: 
                 return json.loads(res.json()['candidates'][0]['content']['parts'][0]['text'])
             else:
-                print(f"❌ AI 생성 실패: {res.status_code} - {res.text}")
+                print(f"❌ AI 생성 실패: {res.status_code}")
         except Exception as e:
             print(f"⚠️ AI 오류: {e}")
         return None
@@ -238,7 +302,7 @@ class WordPressAutoPoster:
         return tag_ids
 
     def run(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 롱테일 키워드 기반 심층 포스팅 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 멀티 피드 기반 심층 포스팅 시작 ---")
         
         # 1. 고의도 롱테일 키워드 발굴
         target_topic = self.get_longtail_keyword()
@@ -276,7 +340,7 @@ class WordPressAutoPoster:
         res = requests.post(f"{CONFIG['WP_URL']}/wp-json/wp/v2/posts", headers={"Authorization": f"Basic {self.auth}", "Content-Type": "application/json"}, json=payload, timeout=60)
         
         if res.status_code == 201:
-            print(f"🎉 성공: 심층 포스팅이 완료되었습니다! (제목: {post_data['title']})")
+            print(f"🎉 성공: 멀티 피드 기반 심층 포스팅 완료! (제목: {post_data['title']})")
         else:
             print(f"❌ 최종 발행 실패: {res.text}")
 
