@@ -47,7 +47,7 @@ class WordPressAutoPoster:
         self.auth = base64.b64encode(user_pass.encode()).decode()
         self.headers = {"Authorization": f"Basic {self.auth}"}
         
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 시스템 초기화 및 문맥 기반 제목 생성 모드 가동...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 시스템 초기화 및 지능형 포스팅 모드 가동...")
         
         # 1. 외부 사이트 RSS 동기화
         self.sync_multiple_rss_feeds()
@@ -85,15 +85,12 @@ class WordPressAutoPoster:
                 if res.status_code != 200: continue
                 root = ET.fromstring(res.content)
                 for item in root.findall('.//item'):
-                    title_elem = item.find('title')
-                    link_elem = item.find('link')
-                    if title_elem is not None and link_elem is not None:
-                        title = title_elem.text.strip()
-                        link = link_elem.text.strip()
-                        if link not in existing_urls:
-                            existing_links.append({"title": title, "url": link})
-                            existing_urls.add(link)
-                            total_added += 1
+                    title = item.find('title').text.strip()
+                    link = item.find('link').text.strip()
+                    if link not in existing_urls:
+                        existing_links.append({"title": title, "url": link})
+                        existing_urls.add(link)
+                        total_added += 1
             except: continue
 
         if total_added > 0:
@@ -139,7 +136,7 @@ class WordPressAutoPoster:
             button_html = (
                 f'\n<!-- wp:buttons {{"layout":{{"type":"flex","justifyContent":"center"}}}} -->\n'
                 f'<div class="wp-block-buttons"><!-- wp:button {{"backgroundColor":"vivid-cyan-blue","borderRadius":5}} -->\n'
-                f'<div class="wp-block-button"><a class="wp-block-button__link has-vivid-cyan-blue-background-color has-background wp-element-button" href="{url}" target="_self" rel="noopener noreferrer">{title}</a></div>\n'
+                f'<div class="wp-block-button"><a class="wp-block-button__link has-vivid-cyan-blue-background-color has-background wp-element-button" href="{url}" target="_self">{title}</a></div>\n'
                 f'<!-- /wp:button --></div>\n<!-- /wp:buttons -->\n'
             )
             anchor_html = f'<a href="{url}" target="_self"><strong>{title}</strong></a>'
@@ -174,11 +171,11 @@ class WordPressAutoPoster:
         return "".join(refined_output).strip()
 
     def generate_image(self, title, excerpt):
-        print(f"🎨 대표 이미지 생성 중...")
+        print(f"🎨 대표 이미지 다변화 생성 중...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['IMAGE_MODEL']}:predict?key={CONFIG['GEMINI_API_KEY']}"
         scenarios = [
-            f"A South Korean financial advisor explaining pension plans to a middle-aged couple in a sunlit modern office.",
-            f"A professional South Korean man in his 50s confidently reviewing retirement plans on a tablet.",
+            f"A South Korean financial advisor explaining documents to a middle-aged couple in a sunlit modern office.",
+            f"A confident South Korean man in his 50s smiling while reviewing retirement plans on a tablet.",
             f"Close-up of a senior's hands holding a financial report and glasses.",
             f"An elderly South Korean couple walking happily in a beautiful scenic park."
         ]
@@ -203,22 +200,24 @@ class WordPressAutoPoster:
         return "국민연금 수령액 늘리는 실전 전략"
 
     def call_gemini_with_search(self, target_topic):
-        """Google Search Grounding 기반 심층 본문 및 문맥 기반 제목 생성"""
+        """Google Search Grounding 기반 심층 본문 및 중복 제거 링크 지침 적용"""
         print(f"🤖 구글 검색 기반 심층 콘텐츠 생성 중 (3,000자 목표)...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{CONFIG['TEXT_MODEL']}:generateContent?key={CONFIG['GEMINI_API_KEY']}"
-        marker_desc = "\n".join([f"- {k} (제목: {v['title']})" for k, v in self.link_map.items()])
+        
+        # 링크 중복 방지를 위해 마커 뒤의 제목 설명을 '참조용'으로만 변경
+        marker_desc = "\n".join([f"- {k}: {v['title']}" for k, v in self.link_map.items()])
         
         system_instruction = f"""당신은 대한민국 최고의 금융 자산관리 전문가입니다. 실시간 데이터를 바탕으로 독자의 의도를 완벽히 해결하는 3,000자 초장문 전문가 칼럼을 작성하세요.
 
 [⚠️ 제목 작성 규칙]
 1. 제목 맨 앞에 '2026년'이나 '2월'을 절대 배치하지 마세요. 
-2. 연도(2026년)나 '업데이트', '최신정보' 등의 문구는 제목의 흐름상 **문맥적으로 자연스럽고 독자의 신뢰를 높이는 데 필요하다고 판단될 때만** 선택적으로 포함하세요.
-3. 무조건적인 괄호 사용보다는 제목의 일부로 녹여내거나, 필요 없다면 생략해도 좋습니다.
+2. 연도(2026년) 문구는 문맥적으로 자연스럽고 독자의 신뢰를 높이는 데 필요할 때만 선택적으로 포함하세요.
 
-[⚠️ 구글 검색 활용] 실시간 규정, 시뮬레이션 데이터, 사례를 직접 조사하여 글에 반영하세요.
-[⚠️ 하이퍼링크 마커 삽입 - 총 4개 필수] 아래 마커들을 반드시 문맥에 맞게 포함하세요.
+[⚠️ 하이퍼링크 마커 삽입 규칙 - 중요]
+1. 아래 제공된 마커들({list(self.link_map.keys())})만 본문 적절한 위치에 삽입하세요.
 {marker_desc}
-- 문맥에 맞으면 문장 속에 삽입. 관련 없는 유용한 정보는 단독 줄(별도 단락)에 삽입하세요.
+2. **절대 금기 사항**: 마커 옆의 제목 설명(예: (제목: ...))을 본문에 같이 적지 마세요. 본문에는 오직 '[[외부추천_0]]'과 같은 마커 코드만 단독으로 들어가야 합니다. 
+3. 마커는 문장 속 혹은 별도 단락에 단독으로 배치할 수 있습니다.
 
 [⚠️ 구텐베르크 블록 표준] 모든 본문 요소는 반드시 wp:paragraph, wp:heading h2/h3, wp:list, wp:table 마커로 감싸세요.
 [⚠️ 분량] 공백 포함 2,500자~3,000자의 압도적인 정보량을 제공하세요."""
@@ -263,12 +262,13 @@ class WordPressAutoPoster:
         return tag_ids
 
     def run(self):
-        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 지능형 포스팅 프로세스 시작 ---")
+        print(f"--- [{datetime.now().strftime('%H:%M:%S')}] 지능형 포스팅 및 링크 중복 제거 모드 실행 ---")
         target_topic = self.get_longtail_keyword()
         post_data = self.call_gemini_with_search(target_topic)
         if not post_data: return
         
         content = self.clean_structure(post_data['content'])
+        # 스마트 링크 주입 로직 실행 (중복 텍스트 발생 원천 차단)
         content = self.inject_smart_links(content)
         
         img_id = None
